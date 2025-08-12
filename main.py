@@ -31,9 +31,6 @@ try:
 except:
     pass
 
-# --- 모델 직접 로딩 관련 코드 모두 삭제 ---
-# load_model(), startup_event() 등은 더 이상 필요 없습니다.
-
 class ChatRequest(BaseModel):
     prompt: str
     max_tokens: Optional[int] = 256
