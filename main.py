@@ -99,5 +99,5 @@ async def chat_with_llama_api(request: ChatRequest):
         raise HTTPException(status_code=500, detail=f"오류가 발생했습니다: {str(e)}")
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 10000))
+    port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
