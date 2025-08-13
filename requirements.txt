@@ -1,5 +1,6 @@
-fastapi
-uvicorn
+fastapi[all]
+uvicorn[standard]
+torch
+transformers
+accelerate
 pydantic
-httpx
-gunicorn

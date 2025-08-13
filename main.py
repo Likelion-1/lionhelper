@@ -1,6 +1,8 @@
+
 import os
-import httpx  # 동기/비동기 HTTP 요청을 위한 라이브러리
-from fastapi import FastAPI, HTTPException, Request
+import torch
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -8,13 +10,14 @@ from pydantic import BaseModel
 from typing import Optional
 import uvicorn
 
-# --- 환경 변수에서 API 토큰 불러오기 ---
-# 이 부분은 Render의 Environment Variables에 설정해야 합니다.
-HF_API_TOKEN = os.getenv("HF_API_TOKEN") 
-MODEL_ID = 'MLP-KTLim/llama-3-Korean-Bllossom-8B'
-API_URL = f"https://api-inference.huggingface.co/models/{MODEL_ID}"
+# 모델 ID
+# 더 가벼운 한국어 모델들 (선택 가능)
+MODEL_ID = 'beomi/KoAlpaca-Polyglot-5.8B'  # 5.8B 파라미터
+# MODEL_ID = 'beomi/KoAlpaca-Polyglot-12.8B'  # 12.8B 파라미터 (더 큰 모델)
+# MODEL_ID = 'microsoft/DialoGPT-medium'  # 영어 모델 (가장 가벼움)
 
-app = FastAPI(title="Llama-3 Korean Chat API (via HF Inference)", version="1.1.0")
+# FastAPI 앱 초기화
+app = FastAPI(title="Llama-3 Korean Chat API (Local)", version="1.0.0")
 
 # CORS 설정
 app.add_middleware(
@@ -25,21 +28,43 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 정적 파일 서빙 설정 (기존과 동일)
+# 정적 파일 서빙 설정
 try:
     app.mount("/static", StaticFiles(directory="static"), name="static")
 except:
     pass
 
+# 모델과 토크나이저 로드
+print("토크나이저를 로딩 중...")
+tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+
+print("모델을 로딩 중...")
+model = AutoModelForCausalLM.from_pretrained(
+    MODEL_ID,
+    torch_dtype=torch.float16,  # M4 Pro에 최적화
+    device_map="auto",
+    trust_remote_code=True,
+    low_cpu_mem_usage=True,  # 메모리 사용량 최적화
+    load_in_8bit=False,  # 8비트 양자화 비활성화 (안정성)
+    max_memory={0: "12GB"}  # 메모리 제한 설정
+)
+
+model.eval()
+
+# Pydantic 모델
 class ChatRequest(BaseModel):
     prompt: str
-    max_tokens: Optional[int] = 256
+    max_new_tokens: Optional[int] = 2048
     temperature: Optional[float] = 0.6
     top_p: Optional[float] = 0.9
 
 class ChatResponse(BaseModel):
     response: str
     model: str
+    status: str
+
+# 시스템 프롬프트
+PROMPT = '''You are a helpful AI assistant. Please answer the user's questions kindly. 당신은 유능한 AI 어시스턴트 입니다. 사용자의 질문에 대해 친절하게 답변해주세요.'''
 
 @app.get("/")
 async def root():
@@ -49,51 +74,62 @@ async def root():
         return {"message": f"API for {MODEL_ID}", "status": "running"}
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat_with_llama_api(request: ChatRequest):
-    """Hugging Face Inference API를 호출하여 대화를 수행합니다."""
-    
-    if not HF_API_TOKEN:
-        raise HTTPException(status_code=500, detail="Hugging Face API 토큰이 설정되지 않았습니다.")
-
-    headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
-    
-    # Hugging Face Chat Completion API 형식에 맞게 payload 구성
-    payload = {
-        "inputs": request.prompt,
-        "parameters": {
-            "max_new_tokens": request.max_tokens,
-            "temperature": request.temperature,
-            "top_p": request.top_p,
-            "return_full_text": False, # 프롬프트를 제외하고 답변만 받기
-        }
-    }
+async def chat_with_llama(request: ChatRequest):
+    """로컬 모델을 사용하여 대화를 수행합니다."""
     
     try:
-        # httpx를 사용하여 비동기 API 요청
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(API_URL, headers=headers, json=payload)
-
-        # 오류 처리
-        if response.status_code != 200:
-            # 모델이 로딩 중일 때 503 에러가 발생할 수 있습니다.
-            if response.status_code == 503:
-                error_detail = response.json().get('error', '모델이 로딩 중입니다. 잠시 후 다시 시도해주세요.')
-                raise HTTPException(status_code=503, detail=error_detail)
-            
-            raise HTTPException(status_code=response.status_code, detail=response.text)
-
-        result = response.json()
-        generated_text = result[0]['generated_text'] if result and 'generated_text' in result[0] else ""
+        # 메시지 구성
+        messages = [
+            {"role": "system", "content": PROMPT},
+            {"role": "user", "content": request.prompt}
+        ]
+        
+        # 입력 토큰화
+        input_ids = tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            return_tensors="pt"
+        ).to(model.device)
+        
+        # 종료 토큰 설정
+        terminators = [
+            tokenizer.eos_token_id,
+            tokenizer.convert_tokens_to_ids("<|eot_id|>")
+        ]
+        
+        # 텍스트 생성
+        outputs = model.generate(
+            input_ids,
+            max_new_tokens=request.max_new_tokens,
+            eos_token_id=terminators,
+            do_sample=True,
+            temperature=request.temperature,
+            top_p=request.top_p
+        )
+        
+        # 결과 디코딩
+        generated_text = tokenizer.decode(
+            outputs[0][input_ids.shape[-1]:], 
+            skip_special_tokens=True
+        )
         
         return ChatResponse(
             response=generated_text.strip(),
-            model=MODEL_ID
+            model=MODEL_ID,
+            status="success"
         )
-
-    except httpx.ReadTimeout:
-        raise HTTPException(status_code=504, detail="Hugging Face API에서 응답이 지연되었습니다.")
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"오류가 발생했습니다: {str(e)}")
+
+@app.get("/health")
+def health_check():
+    """서버 상태를 확인합니다."""
+    return {
+        "status": "healthy",
+        "model": MODEL_ID,
+        "device": str(model.device)
+    }
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
