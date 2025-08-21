@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: lionhelper-combined
+    env: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile.combined
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11
+      - key: PORT
+        value: 8000
+      - key: OLLAMA_BASE_URL
+        value: http://localhost:11434
+      - key: OLLAMA_MODEL
+        value: openai/gpt-oss-20b

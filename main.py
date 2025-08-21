@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gpt-oss:20b")  # 환경변수로 설정 가능
 
+# 외부 Ollama 서비스 URL (필요시 사용)
+EXTERNAL_OLLAMA_URL = os.getenv("EXTERNAL_OLLAMA_URL", "")
+
 # QA 데이터베이스 (키워드 기반 빠른 응답)
 QA_DATABASE = {
     "줌": {
@@ -135,13 +138,19 @@ def find_best_match(user_input: str) -> tuple:
 async def call_ollama(prompt: str, max_tokens: int = 512, temperature: float = 0.6) -> str:
     """Ollama API를 호출하여 응답을 받습니다."""
     
-    # 여러 URL을 시도
+    # 여러 URL을 시도 (Render.com 서비스 간 통신)
     urls_to_try = [
         OLLAMA_BASE_URL,
         "http://korean-chatbot-ollama:11434",
         "http://ollama:11434",
+        "http://lionhelper-ollama:11434",  # 실제 서비스 이름일 수 있음
+        "http://lionhelper-ollama.onrender.com:11434",  # 외부 URL 시도
         "http://localhost:11434"
     ]
+    
+    # 외부 Ollama 서비스가 설정되어 있으면 추가
+    if EXTERNAL_OLLAMA_URL:
+        urls_to_try.insert(0, EXTERNAL_OLLAMA_URL)
     
     for url in urls_to_try:
         try:
@@ -174,6 +183,7 @@ async def call_ollama(prompt: str, max_tokens: int = 512, temperature: float = 0
     
     # 모든 연결 시도 실패
     logger.error("모든 Ollama 연결 시도 실패")
+    logger.error(f"시도한 URL들: {urls_to_try}")
     return "죄송합니다. AI 모델에 연결할 수 없습니다. 키워드 기반 응답만 사용 가능합니다."
 
 @app.get("/")
@@ -208,15 +218,27 @@ async def chat_with_hybrid(request: ChatRequest):
         else:
             # 2단계: 키워드 매칭 실패 시 Ollama 사용
             if request.use_ollama:
-                response = await call_ollama(
+                ollama_response = await call_ollama(
                     request.prompt, 
                     request.max_new_tokens, 
                     request.temperature
                 )
-                status = "success"
-                response_type = "ollama"
-                model_name = OLLAMA_MODEL
-                matched_keywords = []
+                
+                # Ollama 응답이 실패 메시지인지 확인
+                if "연결할 수 없습니다" in ollama_response or "죄송합니다" in ollama_response:
+                    # 키워드 기반 응답으로 fallback
+                    response = "죄송합니다. 해당 질문에 대한 답변을 찾을 수 없습니다. 다음 키워드로 질문해보세요:\n\n"
+                    response += "• 줌/배경화면 설정\n• 훈련장려금/계좌정보\n• 출결/외출/공결\n• 화장실/자리비움\n• 기초클래스/출결등록\n• 내일배움카드/등록\n• 사랑니/치과진료\n• 입원/진단서\n\n또는 담당자에게 직접 문의해주세요."
+                    status = "no_match"
+                    response_type = "keyword"
+                    model_name = "Keyword-based Fast Response System"
+                    matched_keywords = []
+                else:
+                    response = ollama_response
+                    status = "success"
+                    response_type = "ollama"
+                    model_name = OLLAMA_MODEL
+                    matched_keywords = []
             else:
                 response = "죄송합니다. 해당 질문에 대한 답변을 찾을 수 없습니다. 다른 키워드로 질문해주시거나, 담당자에게 직접 문의해주세요."
                 status = "no_match"
