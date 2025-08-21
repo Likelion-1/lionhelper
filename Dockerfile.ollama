@@ -1,0 +1,10 @@
+FROM ollama/ollama:latest
+
+# Ollama 모델 다운로드
+RUN ollama pull openai/gpt-oss-20b
+
+# 포트 노출
+EXPOSE 11434
+
+# Ollama 서버 시작
+CMD ["ollama", "serve"]

@@ -10,3 +10,14 @@ services:
         value: 3.11
       - key: PORT
         value: 8000
+      - key: OLLAMA_BASE_URL
+        value: http://ollama:11434
+
+  - type: web
+    name: ollama
+    env: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile.ollama
+    envVars:
+      - key: OLLAMA_MODEL
+        value: openai/gpt-oss-20b
