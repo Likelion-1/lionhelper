@@ -11,10 +11,10 @@ services:
       - key: PORT
         value: 8000
       - key: OLLAMA_BASE_URL
-        value: http://ollama:11434
+        value: http://korean-chatbot-ollama:11434
 
   - type: web
-    name: ollama
+    name: korean-chatbot-ollama
     env: docker
     plan: starter
     dockerfilePath: ./Dockerfile.ollama

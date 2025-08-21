@@ -1,10 +1,20 @@
 FROM ollama/ollama:latest
 
-# Ollama 모델 다운로드
-RUN ollama pull openai/gpt-oss-20b
+# 시스템 업데이트
+RUN apt-get update && apt-get install -y curl
 
 # 포트 노출
 EXPOSE 11434
 
-# Ollama 서버 시작
-CMD ["ollama", "serve"]
+# 시작 스크립트 생성
+RUN echo '#!/bin/bash\n\
+echo "Ollama 서버 시작 중..."\n\
+ollama serve &\n\
+sleep 10\n\
+echo "모델 다운로드 중..."\n\
+ollama pull openai/gpt-oss-20b\n\
+echo "Ollama 서버 준비 완료"\n\
+wait' > /start.sh && chmod +x /start.sh
+
+# 시작 스크립트 실행
+CMD ["/start.sh"]

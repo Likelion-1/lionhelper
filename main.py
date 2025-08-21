@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # Ollama 설정
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = "gpt-oss:20b"  # 실제 설치된 모델명
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gpt-oss:20b")  # 환경변수로 설정 가능
 
 # QA 데이터베이스 (키워드 기반 빠른 응답)
 QA_DATABASE = {
@@ -134,31 +134,47 @@ def find_best_match(user_input: str) -> tuple:
 
 async def call_ollama(prompt: str, max_tokens: int = 512, temperature: float = 0.6) -> str:
     """Ollama API를 호출하여 응답을 받습니다."""
-    try:
-        url = f"{OLLAMA_BASE_URL}/api/generate"
-        
-        payload = {
-            "model": OLLAMA_MODEL,
-            "prompt": f"다음 질문에 대해 한국어로 친절하고 정확하게 답변해주세요: {prompt}",
-            "stream": False,
-            "options": {
-                "num_predict": max_tokens,
-                "temperature": temperature
+    
+    # 여러 URL을 시도
+    urls_to_try = [
+        OLLAMA_BASE_URL,
+        "http://korean-chatbot-ollama:11434",
+        "http://ollama:11434",
+        "http://localhost:11434"
+    ]
+    
+    for url in urls_to_try:
+        try:
+            full_url = f"{url}/api/generate"
+            logger.info(f"Ollama 연결 시도: {full_url}")
+            
+            payload = {
+                "model": OLLAMA_MODEL,
+                "prompt": f"다음 질문에 대해 한국어로 친절하고 정확하게 답변해주세요: {prompt}",
+                "stream": False,
+                "options": {
+                    "num_predict": max_tokens,
+                    "temperature": temperature
+                }
             }
-        }
-        
-        response = requests.post(url, json=payload, timeout=30)
-        response.raise_for_status()
-        
-        result = response.json()
-        return result.get("response", "죄송합니다. 응답을 생성할 수 없습니다.")
-        
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Ollama API 호출 오류: {str(e)}")
-        return "죄송합니다. AI 모델에 연결할 수 없습니다. 잠시 후 다시 시도해주세요."
-    except Exception as e:
-        logger.error(f"Ollama 응답 처리 오류: {str(e)}")
-        return "죄송합니다. 응답 처리 중 오류가 발생했습니다."
+            
+            response = requests.post(full_url, json=payload, timeout=30)
+            response.raise_for_status()
+            
+            result = response.json()
+            logger.info(f"Ollama 연결 성공: {url}")
+            return result.get("response", "죄송합니다. 응답을 생성할 수 없습니다.")
+            
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Ollama 연결 실패 ({url}): {str(e)}")
+            continue
+        except Exception as e:
+            logger.error(f"Ollama 응답 처리 오류 ({url}): {str(e)}")
+            continue
+    
+    # 모든 연결 시도 실패
+    logger.error("모든 Ollama 연결 시도 실패")
+    return "죄송합니다. AI 모델에 연결할 수 없습니다. 키워드 기반 응답만 사용 가능합니다."
 
 @app.get("/")
 async def root():
@@ -223,13 +239,31 @@ async def chat_with_hybrid(request: ChatRequest):
 @app.get("/health")
 def health_check():
     """서버 상태를 확인합니다."""
+    # Ollama 연결 상태 확인
+    ollama_status = "unknown"
+    try:
+        response = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5)
+        if response.status_code == 200:
+            ollama_status = "connected"
+        else:
+            ollama_status = "error"
+    except:
+        ollama_status = "disconnected"
+    
     return {
         "status": "healthy",
         "model": f"Keyword-based + {OLLAMA_MODEL}",
         "device": "CPU",
         "language": "Korean",
         "qa_count": len(QA_DATABASE),
-        "ollama_url": OLLAMA_BASE_URL
+        "ollama_url": OLLAMA_BASE_URL,
+        "ollama_status": ollama_status,
+        "available_urls": [
+            OLLAMA_BASE_URL,
+            "http://korean-chatbot-ollama:11434",
+            "http://ollama:11434",
+            "http://localhost:11434"
+        ]
     }
 
 @app.get("/info")
