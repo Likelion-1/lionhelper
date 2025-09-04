@@ -1,16 +1,21 @@
 
 import os
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 import uvicorn
 import logging
 from difflib import SequenceMatcher
 import requests
 import json
+import uuid
+from datetime import datetime
+import sqlite3
+import os
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -22,6 +27,42 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gpt-oss:20b")  # 환경변수로 설�
 
 # 외부 Ollama 서비스 URL (필요시 사용)
 EXTERNAL_OLLAMA_URL = os.getenv("EXTERNAL_OLLAMA_URL", "")
+
+# 데이터베이스 초기화
+def init_database():
+    """SQLite 데이터베이스 초기화"""
+    conn = sqlite3.connect('chat_history.db')
+    cursor = conn.cursor()
+    
+    # 세션 테이블
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS sessions (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # 메시지 테이블
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS messages (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            response_type TEXT,
+            model_used TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (session_id) REFERENCES sessions (id)
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
+
+# 데이터베이스 초기화 실행
+init_database()
 
 # QA 데이터베이스 (키워드 기반 빠른 응답)
 QA_DATABASE = {
@@ -83,6 +124,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 전역 예외 핸들러 추가
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """모든 예외에 대해 JSON 응답을 보장합니다."""
+    logger.error(f"예상치 못한 오류: {str(exc)}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"내부 서버 오류: {str(exc)}"}
+    )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """요청 검증 오류에 대한 JSON 응답을 보장합니다."""
+    logger.error(f"요청 검증 오류: {str(exc)}")
+    return JSONResponse(
+        status_code=422,
+        content={"detail": "요청 데이터가 유효하지 않습니다.", "errors": exc.errors()}
+    )
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """HTTP 예외에 대한 JSON 응답을 보장합니다."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail}
+    )
+
 # 정적 파일 서빙 설정
 try:
     app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -95,6 +163,7 @@ print(f"Ollama 모델: {OLLAMA_MODEL}")
 # Pydantic 모델
 class ChatRequest(BaseModel):
     prompt: str
+    session_id: Optional[str] = None
     max_new_tokens: Optional[int] = 512
     temperature: Optional[float] = 0.6
     top_p: Optional[float] = 0.9
@@ -104,8 +173,28 @@ class ChatResponse(BaseModel):
     response: str
     model: str
     status: str
+    session_id: str
+    message_id: str
     matched_keywords: Optional[list] = None
     response_type: str  # "keyword" 또는 "ollama"
+
+class SessionCreate(BaseModel):
+    title: Optional[str] = "새로운 대화"
+
+class Session(BaseModel):
+    id: str
+    title: str
+    created_at: str
+    updated_at: str
+    
+class Message(BaseModel):
+    id: str
+    session_id: str
+    role: str  # "user" 또는 "assistant"
+    content: str
+    response_type: Optional[str] = None
+    model_used: Optional[str] = None
+    created_at: str
 
 def find_best_match(user_input: str) -> tuple:
     """사용자 입력과 가장 잘 매칭되는 QA를 찾습니다."""
@@ -135,8 +224,120 @@ def find_best_match(user_input: str) -> tuple:
     
     return best_match, best_score, matched_keywords
 
+def create_session(title: str = "새로운 대화") -> str:
+    """새로운 채팅 세션 생성"""
+    session_id = str(uuid.uuid4())
+    conn = sqlite3.connect('chat_history.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        INSERT INTO sessions (id, title) VALUES (?, ?)
+    ''', (session_id, title))
+    
+    conn.commit()
+    conn.close()
+    return session_id
+
+def save_message(session_id: str, role: str, content: str, response_type: str = None, model_used: str = None) -> str:
+    """메시지 저장"""
+    message_id = str(uuid.uuid4())
+    conn = sqlite3.connect('chat_history.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        INSERT INTO messages (id, session_id, role, content, response_type, model_used)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (message_id, session_id, role, content, response_type, model_used))
+    
+    # 세션 업데이트 시간 갱신
+    cursor.execute('''
+        UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?
+    ''', (session_id,))
+    
+    conn.commit()
+    conn.close()
+    return message_id
+
+def get_sessions() -> List[Session]:
+    """모든 세션 목록 조회"""
+    conn = sqlite3.connect('chat_history.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT id, title, created_at, updated_at 
+        FROM sessions 
+        ORDER BY updated_at DESC
+    ''')
+    
+    sessions = []
+    for row in cursor.fetchall():
+        sessions.append(Session(
+            id=row[0],
+            title=row[1],
+            created_at=row[2],
+            updated_at=row[3]
+        ))
+    
+    conn.close()
+    return sessions
+
+def get_session_messages(session_id: str) -> List[Message]:
+    """특정 세션의 메시지 목록 조회"""
+    conn = sqlite3.connect('chat_history.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT id, session_id, role, content, response_type, model_used, created_at
+        FROM messages 
+        WHERE session_id = ?
+        ORDER BY created_at ASC
+    ''', (session_id,))
+    
+    messages = []
+    for row in cursor.fetchall():
+        messages.append(Message(
+            id=row[0],
+            session_id=row[1],
+            role=row[2],
+            content=row[3],
+            response_type=row[4],
+            model_used=row[5],
+            created_at=row[6]
+        ))
+    
+    conn.close()
+    return messages
+
+def delete_session(session_id: str):
+    """세션과 관련 메시지 삭제"""
+    conn = sqlite3.connect('chat_history.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('DELETE FROM messages WHERE session_id = ?', (session_id,))
+    cursor.execute('DELETE FROM sessions WHERE id = ?', (session_id,))
+    
+    conn.commit()
+    conn.close()
+
+def update_session_title(session_id: str, title: str):
+    """세션 제목 업데이트"""
+    conn = sqlite3.connect('chat_history.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        UPDATE sessions SET title = ?, updated_at = CURRENT_TIMESTAMP 
+        WHERE id = ?
+    ''', (title, session_id))
+    
+    conn.commit()
+    conn.close()
+
 async def call_ollama(prompt: str, max_tokens: int = 512, temperature: float = 0.6) -> str:
     """Ollama API를 호출하여 응답을 받습니다."""
+    
+    # 입력 검증
+    if not prompt or not prompt.strip():
+        return "입력이 비어있습니다."
     
     # 여러 URL을 시도 (Render.com 서비스 간 통신)
     urls_to_try = [
@@ -170,15 +371,37 @@ async def call_ollama(prompt: str, max_tokens: int = 512, temperature: float = 0
             response = requests.post(full_url, json=payload, timeout=30)
             response.raise_for_status()
             
-            result = response.json()
-            logger.info(f"Ollama 연결 성공: {url}")
-            return result.get("response", "죄송합니다. 응답을 생성할 수 없습니다.")
+            # JSON 응답 처리
+            try:
+                result = response.json()
+            except json.JSONDecodeError as e:
+                logger.error(f"Ollama JSON 파싱 오류 ({url}): {str(e)}")
+                continue
             
+            # 응답 검증
+            if not isinstance(result, dict):
+                logger.error(f"Ollama 응답이 딕셔너리가 아님 ({url}): {type(result)}")
+                continue
+                
+            ollama_response = result.get("response", "").strip()
+            if not ollama_response:
+                logger.warning(f"Ollama 빈 응답 받음 ({url})")
+                continue
+            
+            logger.info(f"Ollama 연결 성공: {url}")
+            return ollama_response
+            
+        except requests.exceptions.Timeout:
+            logger.warning(f"Ollama 타임아웃 ({url})")
+            continue
+        except requests.exceptions.ConnectionError:
+            logger.warning(f"Ollama 연결 오류 ({url})")
+            continue
         except requests.exceptions.RequestException as e:
-            logger.warning(f"Ollama 연결 실패 ({url}): {str(e)}")
+            logger.warning(f"Ollama 요청 실패 ({url}): {str(e)}")
             continue
         except Exception as e:
-            logger.error(f"Ollama 응답 처리 오류 ({url}): {str(e)}")
+            logger.error(f"Ollama 처리 오류 ({url}): {str(e)}")
             continue
     
     # 모든 연결 시도 실패
@@ -204,8 +427,18 @@ async def chat_with_hybrid(request: ChatRequest):
     
     try:
         # 입력 검증
-        if not request.prompt.strip():
+        if not request.prompt or not request.prompt.strip():
             raise HTTPException(status_code=400, detail="메시지를 입력해주세요.")
+        
+        # 세션 처리
+        session_id = request.session_id
+        if not session_id:
+            # 새 세션 생성 (첫 메시지의 일부를 제목으로 사용)
+            title = request.prompt[:30] + "..." if len(request.prompt) > 30 else request.prompt
+            session_id = create_session(title)
+        
+        # 사용자 메시지 저장
+        user_message_id = save_message(session_id, "user", request.prompt)
         
         # 1단계: 키워드 기반 빠른 응답 시도
         best_match, score, matched_keywords = find_best_match(request.prompt)
@@ -246,17 +479,36 @@ async def chat_with_hybrid(request: ChatRequest):
                 model_name = "Keyword-based Fast Response System"
                 matched_keywords = []
         
-        return ChatResponse(
+        # 응답 데이터 유효성 검사
+        if not response:
+            response = "죄송합니다. 응답을 생성할 수 없습니다."
+            status = "error"
+        
+        # AI 응답 저장
+        assistant_message_id = save_message(session_id, "assistant", response, response_type, model_name)
+        
+        # 응답 객체 생성
+        chat_response = ChatResponse(
             response=response,
             model=model_name,
             status=status,
-            matched_keywords=matched_keywords,
+            session_id=session_id,
+            message_id=assistant_message_id,
+            matched_keywords=matched_keywords if matched_keywords else [],
             response_type=response_type
         )
         
+        # 로그 추가
+        logger.info(f"챗봇 응답 성공: session_id={session_id}, response_type={response_type}")
+        
+        return chat_response
+        
+    except HTTPException:
+        # HTTPException은 그대로 전달
+        raise
     except Exception as e:
-        logger.error(f"채팅 오류: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"오류가 발생했습니다: {str(e)}")
+        logger.error(f"채팅 오류: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"내부 서버 오류가 발생했습니다: {str(e)}")
 
 @app.get("/health")
 def health_check():
@@ -319,6 +571,66 @@ def get_qa_list():
             for qa_id, qa_data in QA_DATABASE.items()
         ]
     }
+
+# === 대화 기록 관리 API ===
+
+@app.post("/sessions", response_model=Session)
+def create_new_session(session_data: SessionCreate):
+    """새로운 채팅 세션 생성"""
+    session_id = create_session(session_data.title)
+    sessions = get_sessions()
+    for session in sessions:
+        if session.id == session_id:
+            return session
+    raise HTTPException(status_code=500, detail="세션 생성에 실패했습니다.")
+
+@app.get("/sessions", response_model=List[Session])
+def list_sessions():
+    """모든 채팅 세션 목록 조회"""
+    return get_sessions()
+
+@app.get("/sessions/{session_id}/messages", response_model=List[Message])
+def get_messages(session_id: str):
+    """특정 세션의 메시지 목록 조회"""
+    messages = get_session_messages(session_id)
+    if not messages:
+        # 빈 세션이거나 존재하지 않는 세션인지 확인
+        sessions = get_sessions()
+        session_exists = any(s.id == session_id for s in sessions)
+        if not session_exists:
+            raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+    return messages
+
+@app.delete("/sessions/{session_id}")
+def remove_session(session_id: str):
+    """세션 삭제"""
+    try:
+        delete_session(session_id)
+        return {"message": "세션이 삭제되었습니다.", "session_id": session_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"세션 삭제 중 오류가 발생했습니다: {str(e)}")
+
+@app.put("/sessions/{session_id}/title")
+def rename_session(session_id: str, title_data: dict):
+    """세션 제목 변경"""
+    title = title_data.get("title")
+    if not title:
+        raise HTTPException(status_code=400, detail="제목을 입력해주세요.")
+    
+    try:
+        update_session_title(session_id, title)
+        return {"message": "세션 제목이 변경되었습니다.", "session_id": session_id, "title": title}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"제목 변경 중 오류가 발생했습니다: {str(e)}")
+
+@app.get("/sessions/{session_id}", response_model=Session)
+def get_session_info(session_id: str):
+    """특정 세션 정보 조회"""
+    sessions = get_sessions()
+    for session in sessions:
+        if session.id == session_id:
+            return session
+    raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8001))  # 다른 포트 사용

@@ -28,7 +28,7 @@ echo "Ollama 서버 시작 중..."\n\
 ollama serve &\n\
 sleep 15\n\
 echo "모델 다운로드 중..."\n\
-ollama pull openai/gpt-oss-20b &\n\
+ollama pull llama2:7b &\n\
 echo "FastAPI 서버 시작 중..."\n\
 python main.py' > /start.sh && chmod +x /start.sh
 

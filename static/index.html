@@ -13,51 +13,147 @@
         
         body {
             font-family: 'Apple SD Gothic Neo', 'Malgun Gothic', '맑은 고딕', sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: #f8f9fa;
             min-height: 100vh;
             display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
         }
         
-        .chat-container {
+        /* 사이드바 스타일 */
+        .sidebar {
+            width: 300px;
             background: white;
-            border-radius: 20px;
-            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-            overflow: hidden;
-            width: 100%;
-            max-width: 800px;
-            height: 600px;
+            border-right: 1px solid #e9ecef;
             display: flex;
             flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
         }
         
-        .chat-header {
+        .sidebar-header {
+            padding: 20px;
+            border-bottom: 1px solid #e9ecef;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
-            padding: 25px;
-            text-align: center;
+        }
+        
+        .sidebar-header h2 {
+            font-size: 18px;
+            margin-bottom: 10px;
+        }
+        
+        .new-chat-btn {
+            width: 100%;
+            padding: 10px 15px;
+            background: rgba(255,255,255,0.2);
+            border: 1px solid rgba(255,255,255,0.3);
+            border-radius: 8px;
+            color: white;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+        
+        .new-chat-btn:hover {
+            background: rgba(255,255,255,0.3);
+        }
+        
+        .chat-history {
+            flex: 1;
+            overflow-y: auto;
+            padding: 15px;
+        }
+        
+        .chat-item {
+            padding: 12px;
+            margin-bottom: 8px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border: 1px solid transparent;
             position: relative;
         }
         
-        .chat-header h1 {
-            font-size: 24px;
-            margin-bottom: 5px;
-            font-weight: 600;
+        .chat-item:hover {
+            background: #f8f9fa;
+            border-color: #e9ecef;
         }
         
-        .chat-header p {
+        .chat-item.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .chat-title {
             font-size: 14px;
-            opacity: 0.9;
+            font-weight: 500;
+            margin-bottom: 4px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        .chat-date {
+            font-size: 12px;
+            opacity: 0.7;
+        }
+        
+        .chat-actions {
+            position: absolute;
+            right: 8px;
+            top: 50%;
+            transform: translateY(-50%);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+        
+        .chat-item:hover .chat-actions {
+            opacity: 1;
+        }
+        
+        .action-btn {
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 4px;
+            margin-left: 4px;
+            border-radius: 4px;
+            font-size: 12px;
+            opacity: 0.7;
+        }
+        
+        .action-btn:hover {
+            opacity: 1;
+            background: rgba(0,0,0,0.1);
+        }
+        
+        /* 메인 채팅 영역 */
+        .main-chat {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+        
+        .chat-header {
+            background: white;
+            padding: 20px;
+            border-bottom: 1px solid #e9ecef;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        .chat-header h1 {
+            font-size: 20px;
+            color: #333;
+            display: flex;
+            align-items: center;
+            gap: 10px;
         }
         
         .status-indicator {
-            position: absolute;
-            top: 20px;
-            right: 20px;
-            width: 12px;
-            height: 12px;
+            width: 10px;
+            height: 10px;
             background: #4CAF50;
             border-radius: 50%;
             animation: pulse 2s infinite;
@@ -225,43 +321,80 @@
             border-color: #667eea;
         }
         
+        .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            text-align: center;
+            color: #666;
+        }
+        
+        .empty-state h2 {
+            font-size: 24px;
+            margin-bottom: 10px;
+            color: #333;
+        }
+        
+        .empty-state p {
+            margin-bottom: 20px;
+        }
+        
+        /* 모바일 반응형 */
         @media (max-width: 768px) {
-            .chat-container {
-                height: 100vh;
-                border-radius: 0;
+            body {
+                flex-direction: column;
+            }
+            
+            .sidebar {
+                width: 100%;
+                height: auto;
+                order: 2;
+            }
+            
+            .main-chat {
+                order: 1;
+                height: 70vh;
             }
             
             .message {
                 max-width: 90%;
             }
-            
-            .chat-header h1 {
-                font-size: 20px;
-            }
         }
     </style>
 </head>
 <body>
-    <div class="chat-container">
+    <!-- 사이드바 -->
+    <div class="sidebar">
+        <div class="sidebar-header">
+            <h2>🤖 라이언 헬퍼</h2>
+            <button class="new-chat-btn" onclick="createNewChat()">+ 새로운 대화</button>
+        </div>
+        <div class="chat-history" id="chatHistory">
+            <!-- 대화 기록이 여기에 표시됩니다 -->
+        </div>
+    </div>
+
+    <!-- 메인 채팅 영역 -->
+    <div class="main-chat">
         <div class="chat-header">
-            <div class="status-indicator"></div>
-            <h1>🤖 한국어 AI 챗봇</h1>
-            <p>친근하고 유능한 AI와 대화해보세요</p>
+            <h1>
+                <div class="status-indicator"></div>
+                무엇이 궁금하세요?
+            </h1>
         </div>
         
         <div class="chat-messages" id="chatMessages">
-            <div class="welcome-message">
-                안녕하세요! 무엇을 도와드릴까요?
-            </div>
-            <div class="message bot-message">
-                안녕하세요! 저는 한국어에 특화된 AI 어시스턴트입니다. 
-                질문이나 대화를 자유롭게 나누어보세요. 무엇이든 도와드릴게요! 😊
-            </div>
-            <div class="suggestions">
-                <div class="suggestion-btn" onclick="sendSuggestion('안녕하세요!')">안녕하세요!</div>
-                <div class="suggestion-btn" onclick="sendSuggestion('오늘 날씨는 어때요?')">오늘 날씨는 어때요?</div>
-                <div class="suggestion-btn" onclick="sendSuggestion('재미있는 이야기 해주세요')">재미있는 이야기 해주세요</div>
-                <div class="suggestion-btn" onclick="sendSuggestion('도움이 필요한 일이 있어요')">도움이 필요한 일이 있어요</div>
+            <div id="emptyState" class="empty-state">
+                <h2>안녕하세요! 👋</h2>
+                <p>라이언 헬퍼입니다. 궁금한 것이 있으시면 언제든 물어보세요!</p>
+                <div class="suggestions">
+                    <div class="suggestion-btn" onclick="sendSuggestion('훈련장려금 수령 계좌 정보가 안보여요')">훈련장려금 관련</div>
+                    <div class="suggestion-btn" onclick="sendSuggestion('줌 배경화면 어떻게 설정하나요?')">줌 설정</div>
+                    <div class="suggestion-btn" onclick="sendSuggestion('출결 관련 문의')">출결 문의</div>
+                    <div class="suggestion-btn" onclick="sendSuggestion('기초클래스 출결 등록이 안돼요')">기초클래스</div>
+                </div>
             </div>
         </div>
         
@@ -284,8 +417,172 @@
 
     <script>
         let isProcessing = false;
+        let currentSessionId = null;
+        let sessions = [];
         
-        async function sendMessage() {
+        // 페이지 로드 시 초기화
+        window.onload = function() {
+            loadChatHistory();
+            document.getElementById('messageInput').focus();
+        };
+        
+        // 대화 기록 로드
+        async function loadChatHistory() {
+            try {
+                const response = await fetch('/sessions');
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const contentType = response.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    throw new Error('서버에서 JSON이 아닌 응답을 받았습니다.');
+                }
+                
+                sessions = await response.json();
+                renderChatHistory();
+                
+                // 가장 최근 세션을 자동으로 로드
+                if (sessions.length > 0) {
+                    loadSession(sessions[0].id);
+                }
+            } catch (error) {
+                console.error('대화 기록 로드 실패:', error);
+                // 대화 기록 로드 실패시에도 앱이 작동하도록 빈 배열로 설정
+                sessions = [];
+                renderChatHistory();
+            }
+        }
+        
+        // 대화 기록 렌더링
+        function renderChatHistory() {
+            const historyDiv = document.getElementById('chatHistory');
+            if (sessions.length === 0) {
+                historyDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">아직 대화 기록이 없습니다.</div>';
+                return;
+            }
+            
+            historyDiv.innerHTML = sessions.map(session => `
+                <div class="chat-item ${session.id === currentSessionId ? 'active' : ''}" 
+                     onclick="loadSession('${session.id}')">
+                    <div class="chat-title">${session.title}</div>
+                    <div class="chat-date">${formatDate(session.updated_at)}</div>
+                    <div class="chat-actions">
+                        <button class="action-btn" onclick="event.stopPropagation(); renameSession('${session.id}')" title="이름 변경">✏️</button>
+                        <button class="action-btn" onclick="event.stopPropagation(); deleteSession('${session.id}')" title="삭제">🗑️</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+        
+        // 세션 로드
+        async function loadSession(sessionId) {
+            currentSessionId = sessionId;
+            renderChatHistory(); // 활성 세션 표시 업데이트
+            
+            try {
+                const response = await fetch(`/sessions/${sessionId}/messages`);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const contentType = response.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    throw new Error('서버에서 JSON이 아닌 응답을 받았습니다.');
+                }
+                
+                const messages = await response.json();
+                renderMessages(messages);
+                hideEmptyState();
+            } catch (error) {
+                console.error('메시지 로드 실패:', error);
+                // 메시지 로드 실패시 빈 상태 표시
+                clearMessages();
+                showEmptyState();
+            }
+        }
+        
+        // 메시지 렌더링
+        function renderMessages(messages) {
+            const messagesDiv = document.getElementById('chatMessages');
+            messagesDiv.innerHTML = '';
+            
+            messages.forEach(message => {
+                addMessageToDOM(message.content, message.role === 'user' ? 'user' : 'bot');
+            });
+            
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        
+        // 새로운 대화 생성
+        async function createNewChat() {
+            try {
+                const response = await fetch('/sessions', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title: '새로운 대화' })
+                });
+                
+                if (response.ok) {
+                    const newSession = await response.json();
+                    sessions.unshift(newSession);
+                    currentSessionId = newSession.id;
+                    renderChatHistory();
+                    clearMessages();
+                    showEmptyState();
+                }
+            } catch (error) {
+                console.error('새 대화 생성 실패:', error);
+            }
+        }
+        
+        // 세션 삭제
+        async function deleteSession(sessionId) {
+            if (!confirm('이 대화를 삭제하시겠습니까?')) return;
+            
+            try {
+                const response = await fetch(`/sessions/${sessionId}`, {
+                    method: 'DELETE'
+                });
+                
+                if (response.ok) {
+                    sessions = sessions.filter(s => s.id !== sessionId);
+                    if (currentSessionId === sessionId) {
+                        currentSessionId = null;
+                        clearMessages();
+                        showEmptyState();
+                    }
+                    renderChatHistory();
+                }
+            } catch (error) {
+                console.error('세션 삭제 실패:', error);
+            }
+        }
+        
+        // 세션 이름 변경
+        async function renameSession(sessionId) {
+            const session = sessions.find(s => s.id === sessionId);
+            const newTitle = prompt('새로운 제목을 입력하세요:', session.title);
+            if (!newTitle || newTitle === session.title) return;
+            
+            try {
+                const response = await fetch(`/sessions/${sessionId}/title`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title: newTitle })
+                });
+                
+                if (response.ok) {
+                    session.title = newTitle;
+                    renderChatHistory();
+                }
+            } catch (error) {
+                console.error('제목 변경 실패:', error);
+            }
+        }
+        
+        // 메시지 전송
+        async function sendMessage(retryCount = 0) {
             if (isProcessing) return;
             
             const input = document.getElementById('messageInput');
@@ -295,10 +592,13 @@
             
             isProcessing = true;
             updateUI();
+            hideEmptyState();
             
-            // 사용자 메시지 표시
-            addMessage(message, 'user');
-            input.value = '';
+            // 사용자 메시지 표시 (처음 시도일 때만)
+            if (retryCount === 0) {
+                addMessageToDOM(message, 'user');
+                input.value = '';
+            }
             
             // 로딩 표시
             document.getElementById('loading').style.display = 'block';
@@ -306,26 +606,74 @@
             try {
                 const response = await fetch('/chat', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         prompt: message,
-                        max_new_tokens: 512,  // 속도 향상을 위해 줄임
-                        temperature: 0.6,  // 안정성 향상
+                        session_id: currentSessionId,
+                        max_new_tokens: 512,
+                        temperature: 0.6,
                         top_p: 0.9
                     })
                 });
                 
-                const data = await response.json();
-                
-                if (response.ok) {
-                    addMessage(data.response, 'bot');
-                } else {
-                    addMessage(`오류가 발생했습니다: ${data.detail || '알 수 없는 오류'}`, 'error');
+                // 응답 상태 먼저 확인
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
                 }
+                
+                // Content-Type 확인
+                const contentType = response.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    const text = await response.text();
+                    throw new Error(`서버가 JSON이 아닌 응답을 반환했습니다: ${text.substring(0, 100)}...`);
+                }
+                
+                // JSON 파싱
+                let data;
+                try {
+                    data = await response.json();
+                } catch (jsonError) {
+                    const text = await response.text();
+                    throw new Error(`JSON 파싱 실패: ${text.substring(0, 100)}...`);
+                }
+                
+                // 응답 데이터 검증
+                if (!data || typeof data !== 'object') {
+                    throw new Error('유효하지 않은 응답 데이터');
+                }
+                
+                if (data.response) {
+                    addMessageToDOM(data.response, 'bot');
+                    
+                    // 새 세션이 생성된 경우
+                    if (!currentSessionId || currentSessionId !== data.session_id) {
+                        currentSessionId = data.session_id;
+                        loadChatHistory(); // 히스토리 새로고침
+                    }
+                } else {
+                    addMessageToDOM('서버에서 빈 응답을 받았습니다.', 'error');
+                }
+                
             } catch (error) {
-                addMessage(`네트워크 오류: ${error.message}`, 'error');
+                console.error(`채팅 오류 (시도 ${retryCount + 1}):`, error);
+                
+                // 최대 2번까지 재시도
+                if (retryCount < 2 && (error.message.includes('Failed to fetch') || error.message.includes('JSON'))) {
+                    console.log(`${retryCount + 1}초 후 재시도...`);
+                    setTimeout(() => {
+                        sendMessage(retryCount + 1);
+                    }, (retryCount + 1) * 1000);
+                    return;
+                }
+                
+                // 재시도 실패 또는 다른 오류
+                if (error.message.includes('Failed to fetch')) {
+                    addMessageToDOM('서버에 연결할 수 없습니다. 잠시 후 다시 시도해주세요.', 'error');
+                } else if (error.message.includes('JSON')) {
+                    addMessageToDOM('서버 응답에 문제가 있습니다. 잠시 후 다시 시도해주세요.', 'error');
+                } else {
+                    addMessageToDOM(`오류: ${error.message}`, 'error');
+                }
             } finally {
                 document.getElementById('loading').style.display = 'none';
                 isProcessing = false;
@@ -333,12 +681,14 @@
             }
         }
         
+        // 추천 질문 전송
         function sendSuggestion(text) {
             document.getElementById('messageInput').value = text;
             sendMessage();
         }
         
-        function addMessage(text, type) {
+        // DOM에 메시지 추가
+        function addMessageToDOM(text, type) {
             const messagesDiv = document.getElementById('chatMessages');
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${type}-message`;
@@ -347,6 +697,35 @@
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
         }
         
+        // 메시지 지우기
+        function clearMessages() {
+            document.getElementById('chatMessages').innerHTML = '';
+        }
+        
+        // 빈 상태 표시/숨기기
+        function showEmptyState() {
+            document.getElementById('chatMessages').innerHTML = `
+                <div id="emptyState" class="empty-state">
+                    <h2>안녕하세요! 👋</h2>
+                    <p>라이언 헬퍼입니다. 궁금한 것이 있으시면 언제든 물어보세요!</p>
+                    <div class="suggestions">
+                        <div class="suggestion-btn" onclick="sendSuggestion('훈련장려금 수령 계좌 정보가 안보여요')">훈련장려금 관련</div>
+                        <div class="suggestion-btn" onclick="sendSuggestion('줌 배경화면 어떻게 설정하나요?')">줌 설정</div>
+                        <div class="suggestion-btn" onclick="sendSuggestion('출결 관련 문의')">출결 문의</div>
+                        <div class="suggestion-btn" onclick="sendSuggestion('기초클래스 출결 등록이 안돼요')">기초클래스</div>
+                    </div>
+                </div>
+            `;
+        }
+        
+        function hideEmptyState() {
+            const emptyState = document.getElementById('emptyState');
+            if (emptyState) {
+                emptyState.remove();
+            }
+        }
+        
+        // 키보드 이벤트 처리
         function handleKeyPress(event) {
             if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault();
@@ -354,6 +733,7 @@
             }
         }
         
+        // UI 업데이트
         function updateUI() {
             const sendButton = document.getElementById('sendButton');
             const messageInput = document.getElementById('messageInput');
@@ -370,10 +750,25 @@
             }
         }
         
-        // 페이지 로드 시 입력창에 포커스
-        window.onload = function() {
-            document.getElementById('messageInput').focus();
-        };
+        // 날짜 포맷팅
+        function formatDate(dateString) {
+            const date = new Date(dateString);
+            const now = new Date();
+            const diffMs = now - date;
+            const diffMins = Math.floor(diffMs / 60000);
+            const diffHours = Math.floor(diffMins / 60);
+            const diffDays = Math.floor(diffHours / 24);
+            
+            if (diffMins < 1) return '방금 전';
+            if (diffMins < 60) return `${diffMins}분 전`;
+            if (diffHours < 24) return `${diffHours}시간 전`;
+            if (diffDays < 7) return `${diffDays}일 전`;
+            
+            return date.toLocaleDateString('ko-KR', {
+                month: 'short',
+                day: 'numeric'
+            });
+        }
     </script>
 </body>
-</html> 
+</html>

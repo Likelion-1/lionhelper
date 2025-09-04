@@ -1,9 +1,10 @@
 services:
   - type: web
-    name: lionhelper-combined
-    env: docker
+    name: lionhelper-keyword
+    env: python
     plan: starter
-    dockerfilePath: ./Dockerfile.combined
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
         value: 3.11
@@ -13,3 +14,6 @@ services:
         value: http://localhost:11434
       - key: OLLAMA_MODEL
         value: llama2:7b
+      - key: USE_OLLAMA
+        value: false
+
