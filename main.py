@@ -207,15 +207,24 @@ def find_best_match(user_input: str) -> tuple:
         score = 0
         keywords_found = []
         
-        # 키워드 매칭
+        # 키워드 매칭 (더 관대하게)
         for keyword in qa_data["keywords"]:
             if keyword.lower() in user_input_lower:
-                score += 2
+                score += 3  # 키워드 가중치 증가
                 keywords_found.append(keyword)
         
-        # 질문과의 유사도 계산
+        # 부분 매칭도 고려
+        for keyword in qa_data["keywords"]:
+            if len(keyword) > 2:  # 2글자 이상 키워드
+                for word in user_input_lower.split():
+                    if keyword.lower() in word or word in keyword.lower():
+                        score += 1
+                        if keyword not in keywords_found:
+                            keywords_found.append(keyword)
+        
+        # 질문과의 유사도 계산 (가중치 감소)
         question_similarity = SequenceMatcher(None, user_input_lower, qa_data["question"].lower()).ratio()
-        score += question_similarity * 3
+        score += question_similarity * 2
         
         if score > best_score:
             best_score = score
@@ -339,21 +348,18 @@ async def call_ollama(prompt: str, max_tokens: int = 512, temperature: float = 0
     if not prompt or not prompt.strip():
         return "입력이 비어있습니다."
     
-    # 여러 URL을 시도 (Render.com 서비스 간 통신)
-    urls_to_try = [
-        OLLAMA_BASE_URL,
-        "http://korean-chatbot-ollama:11434",
-        "http://ollama:11434",
-        "http://lionhelper-ollama:11434",  # 실제 서비스 이름일 수 있음
-        "http://lionhelper-ollama.onrender.com:11434",  # 외부 URL 시도
-        "http://localhost:11434"
-    ]
+    # 우선순위가 높은 URL만 시도 (빠른 fallback을 위해)
+    urls_to_try = []
     
-    # 외부 Ollama 서비스가 설정되어 있으면 추가
+    # 외부 Ollama 서비스가 설정되어 있으면 최우선
     if EXTERNAL_OLLAMA_URL:
-        urls_to_try.insert(0, EXTERNAL_OLLAMA_URL)
+        urls_to_try.append(EXTERNAL_OLLAMA_URL)
     
-    for url in urls_to_try:
+    # 기본 URL 추가
+    urls_to_try.append(OLLAMA_BASE_URL)
+    
+    # 최대 2개 URL만 시도 (타임아웃 방지)
+    for url in urls_to_try[:2]:
         try:
             full_url = f"{url}/api/generate"
             logger.info(f"Ollama 연결 시도: {full_url}")
@@ -368,7 +374,7 @@ async def call_ollama(prompt: str, max_tokens: int = 512, temperature: float = 0
                 }
             }
             
-            response = requests.post(full_url, json=payload, timeout=30)
+            response = requests.post(full_url, json=payload, timeout=5)
             response.raise_for_status()
             
             # JSON 응답 처리
@@ -443,7 +449,7 @@ async def chat_with_hybrid(request: ChatRequest):
         # 1단계: 키워드 기반 빠른 응답 시도
         best_match, score, matched_keywords = find_best_match(request.prompt)
         
-        if best_match and score > 1.0:  # 임계값 설정
+        if best_match and score > 0.5:  # 임계값 낮춤 (더 빠른 응답)
             response = best_match["answer"]
             status = "success"
             response_type = "keyword"
@@ -459,10 +465,12 @@ async def chat_with_hybrid(request: ChatRequest):
                 
                 # Ollama 응답이 실패 메시지인지 확인
                 if "연결할 수 없습니다" in ollama_response or "죄송합니다" in ollama_response:
-                    # 키워드 기반 응답으로 fallback
-                    response = "죄송합니다. 해당 질문에 대한 답변을 찾을 수 없습니다. 다음 키워드로 질문해보세요:\n\n"
-                    response += "• 줌/배경화면 설정\n• 훈련장려금/계좌정보\n• 출결/외출/공결\n• 화장실/자리비움\n• 기초클래스/출결등록\n• 내일배움카드/등록\n• 사랑니/치과진료\n• 입원/진단서\n\n또는 담당자에게 직접 문의해주세요."
-                    status = "no_match"
+                    # 더 도움이 되는 기본 응답 제공
+                    response = "안녕하세요! 현재 AI 모델에 일시적인 연결 문제가 있어 키워드 기반으로 답변드리겠습니다.\n\n"
+                    response += "다음과 같은 주제로 질문해주세요:\n"
+                    response += "• 줌/배경화면 설정 문의\n• 훈련장려금/계좌정보 문의\n• 출결/외출/공결 관련\n• 화장실/자리비움 관련\n• 기초클래스/출결등록 문제\n• 내일배움카드/등록 이슈\n• 사랑니/치과진료 공결 문의\n• 입원/진단서 관련\n\n"
+                    response += "또는 구체적인 키워드로 다시 질문해주시면 더 정확한 답변을 드릴 수 있습니다!"
+                    status = "fallback"
                     response_type = "keyword"
                     model_name = "Keyword-based Fast Response System"
                     matched_keywords = []
@@ -513,10 +521,11 @@ async def chat_with_hybrid(request: ChatRequest):
 @app.get("/health")
 def health_check():
     """서버 상태를 확인합니다."""
-    # Ollama 연결 상태 확인
+    # Ollama 연결 상태 확인 (빠른 체크)
     ollama_status = "unknown"
     try:
-        response = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5)
+        # 빠른 연결 테스트 (2초 타임아웃)
+        response = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=2)
         if response.status_code == 200:
             ollama_status = "connected"
         else:
@@ -532,12 +541,8 @@ def health_check():
         "qa_count": len(QA_DATABASE),
         "ollama_url": OLLAMA_BASE_URL,
         "ollama_status": ollama_status,
-        "available_urls": [
-            OLLAMA_BASE_URL,
-            "http://korean-chatbot-ollama:11434",
-            "http://ollama:11434",
-            "http://localhost:11434"
-        ]
+        "response_mode": "hybrid_optimized",
+        "timeout_settings": "5s_connection_30s_graceful"
     }
 
 @app.get("/info")
