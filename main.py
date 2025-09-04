@@ -466,10 +466,11 @@ async def chat_with_hybrid(request: ChatRequest):
                 # Ollama 응답이 실패 메시지인지 확인
                 if "연결할 수 없습니다" in ollama_response or "죄송합니다" in ollama_response:
                     # 더 도움이 되는 기본 응답 제공
-                    response = "안녕하세요! 현재 AI 모델에 일시적인 연결 문제가 있어 키워드 기반으로 답변드리겠습니다.\n\n"
-                    response += "다음과 같은 주제로 질문해주세요:\n"
-                    response += "• 줌/배경화면 설정 문의\n• 훈련장려금/계좌정보 문의\n• 출결/외출/공결 관련\n• 화장실/자리비움 관련\n• 기초클래스/출결등록 문제\n• 내일배움카드/등록 이슈\n• 사랑니/치과진료 공결 문의\n• 입원/진단서 관련\n\n"
-                    response += "또는 구체적인 키워드로 다시 질문해주시면 더 정확한 답변을 드릴 수 있습니다!"
+                    response = "안녕하세요! 라이언 헬퍼입니다. 😊\n\n"
+                    response += "현재 고급 AI 기능은 점검 중이지만, 빠른 키워드 검색으로 도움을 드릴 수 있습니다!\n\n"
+                    response += "📋 **자주 문의하는 주제들:**\n"
+                    response += "• 🖥️ 줌/배경화면 설정\n• 💰 훈련장려금/계좌정보\n• 📝 출결/외출/공결 관련\n• 🚻 화장실/자리비움\n• 📚 기초클래스/출결등록\n• 💳 내일배움카드/등록\n• 🦷 사랑니/치과진료 공결\n• 🏥 입원/진단서 관련\n\n"
+                    response += "구체적인 키워드로 질문해주시면 정확한 답변을 즉시 드릴 수 있습니다! ✨"
                     status = "fallback"
                     response_type = "keyword"
                     model_name = "Keyword-based Fast Response System"
@@ -481,7 +482,11 @@ async def chat_with_hybrid(request: ChatRequest):
                     model_name = OLLAMA_MODEL
                     matched_keywords = []
             else:
-                response = "죄송합니다. 해당 질문에 대한 답변을 찾을 수 없습니다. 다른 키워드로 질문해주시거나, 담당자에게 직접 문의해주세요."
+                response = "안녕하세요! 라이언 헬퍼입니다. 😊\n\n"
+                response += "현재 고급 AI 기능은 점검 중이지만, 빠른 키워드 검색으로 도움을 드릴 수 있습니다!\n\n"
+                response += "📋 **자주 문의하는 주제들:**\n"
+                response += "• 🖥️ 줌/배경화면 설정\n• 💰 훈련장려금/계좌정보\n• 📝 출결/외출/공결 관련\n• 🚻 화장실/자리비움\n• 📚 기초클래스/출결등록\n• 💳 내일배움카드/등록\n• 🦷 사랑니/치과진료 공결\n• 🏥 입원/진단서 관련\n\n"
+                response += "구체적인 키워드로 질문해주시면 정확한 답변을 즉시 드릴 수 있습니다! ✨"
                 status = "no_match"
                 response_type = "keyword"
                 model_name = "Keyword-based Fast Response System"
