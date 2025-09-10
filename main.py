@@ -393,67 +393,64 @@ app = FastAPI(
     title="라이언 헬퍼 AI 챗봇 API",
     version="3.0.0",
     description="""
-## 🦁 라이언 헬퍼 - 학생과 기업을 연결하는 플랫폼 API
+## 🤖 라이언 헬퍼 AI 챗봇 - 훈련생을 위한 스마트 도우미 API
 
 ### 📚 주요 기능
-- 🤖 **AI 챗봇**: 이메일/비밀번호 인증
-- 🎓 **교육 지원**: 이력서, 포트폴리오 관리  
-- 💻 **기업 프로필**: 채용 정보, 기업 소개
-- 💛 **매칭 시스템**: 학생과 기업 연결
-- 🏆 **커뮤니티 기능**: 기업담당자와 수강생 연결 요청 기능
+- 🤖 **하이브리드 AI 챗봇**: 키워드 기반 + Ollama GPT 모델
+- 📝 **훈련 관련 정보**: 훈련장려금, 출결, 공결 관련 즉시 답변
+- 🖥️ **교육 지원**: 줌, 노트북, 교재 관련 안내
+- 💼 **커리어 지원**: 취업, 인턴십, 포트폴리오 상담
+- 💬 **대화 기록 관리**: 세션별 대화 내용 저장 및 관리
 
-### 🔐 인증 방식
-- JWT Bearer Token 사용
-- 로그인 후 자동 토큰 발급
-- 토큰은 Authorization 헤더에 `Bearer {token}` 형태로 전송
+### 🔧 시스템 구조
+- **1단계**: 키워드 기반 빠른 응답 (47개 QA 데이터베이스)
+- **2단계**: AI 모델 생성 응답 (Ollama GPT-OSS-20B)
+- **백업**: 연결 실패 시 기본 안내 응답
 
-### 👥 사용자 유형
-- **🎓students**: 수강생 (이력서, 포트폴리오 작성)
-- **🏢company**: 기업 (채용 정보, 학생 검색)
+### 🎯 지원 주제
+- **💰 훈련장려금**: 계좌 변경, 금액, 지급시기, 수령 조건
+- **📋 출결관리**: QR코드, 지각, 조퇴, 외출, 공결 신청
+- **🖥️ 교육도구**: 줌 설정, 노트북 대여/반납, 교재 수령
+- **🎓 학습지원**: 기초클래스, OT, 녹화본, 과제 제출
+- **💼 커리어**: 수료 후 취업, 조기취업, 인턴십, 특강
 
 ### 🔄 개발 환경
 - **🔗Base URL**: `http://localhost:8000`
 - **📖API 문서**: `/docs` (Swagger UI)
 - **🔧대안 문서**: `/redoc` (ReDoc)
 
-### 💡 로그인 플로우
-1. 사용자가 이메일/비밀번호로 회원가입
-2. 로그인 시 JWT 토큰 발급
-3. API 요청 시 Authorization 헤더에 토큰 포함:
-   
-   `Authorization: Bearer {access_token}`
+### 💡 사용 플로우
+1. `/chat` API로 질문 전송
+2. 시스템이 키워드 매칭 시도
+3. 매칭 실패 시 AI 모델 호출
+4. 응답과 함께 매칭된 키워드 정보 반환
 
 ### 🔗 API 사용 예시
 ```bash
-# 회원가입
-POST /auth/signup/student
+# AI 챗봇과 대화
+POST /chat
 {
-  "email": "student@example.com",
-  "password": "password123",
-  "name": "홍길동"
+  "prompt": "훈련장려금은 얼마인가요?",
+  "session_id": "optional-session-id",
+  "use_ollama": true
 }
 
-# 로그인
-POST /auth/login
-{
-  "email": "student@example.com",
-  "password": "string"
-}
+# 서버 상태 확인
+GET /health
 
-# 인증이 필요한 API 호출
-GET /auth/me
-Authorization: Bearer {access_token}
+# QA 목록 조회
+GET /qa-list
 ```
 
 ### 📞 문의
-Contact Lion Helper Team
+라이언 헬퍼 개발팀
 
 **License**: MIT
     """,
     contact={
-        "name": "Lion Helper Team",
-        "url": "https://lionhelper.com",
-        "email": "support@lionhelper.com"
+        "name": "라이언 헬퍼 개발팀",
+        "url": "https://github.com/lionhelper/chatbot",
+        "email": "dev@lionhelper.com"
     },
     license_info={
         "name": "MIT",
@@ -462,11 +459,11 @@ Contact Lion Helper Team
     servers=[
         {
             "url": "http://localhost:8000",
-            "description": "개발 서버"
+            "description": "로컬 개발 서버"
         },
         {
-            "url": "https://api.lionhelper.com",
-            "description": "운영 서버"
+            "url": "http://localhost:8001", 
+            "description": "테스트 서버"
         }
     ],
     tags_metadata=[
@@ -551,7 +548,7 @@ class ChatRequest(BaseModel):
     class Config:
         schema_extra = {
             "example": {
-                "prompt": "줌 배경화면 설정은 어떻게 하나요?",
+                "prompt": "훈련장려금은 언제 받을 수 있나요?",
                 "session_id": "123e4567-e89b-12d3-a456-426614174000",
                 "max_new_tokens": 512,
                 "temperature": 0.6,
@@ -562,23 +559,23 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     """AI 챗봇 응답 모델"""
-    response: str = Field(..., description="AI의 응답 메시지", example="해당 사항은 수강생 공식 안내 페이지(노션) 내 K-Digital Training 수강준비 가이드에 자세히 나와있음을 안내드립니다.")
+    response: str = Field(..., description="AI의 응답 메시지", example="훈련장려금은 해당 과정의 단위기간 마감일을 기준으로 지급까지 2주에서 3주 가량 소요됩니다")
     model: str = Field(..., description="사용된 모델명", example="Keyword-based Fast Response System")
     status: str = Field(..., description="응답 상태", example="success")
     session_id: str = Field(..., description="세션 ID", example="123e4567-e89b-12d3-a456-426614174000")
     message_id: str = Field(..., description="메시지 ID", example="456e7890-e89b-12d3-a456-426614174001")
-    matched_keywords: Optional[List[str]] = Field(None, description="매칭된 키워드 목록", example=["줌", "배경화면", "설정"])
+    matched_keywords: Optional[List[str]] = Field(None, description="매칭된 키워드 목록", example=["훈련장려금", "언제", "받기"])
     response_type: str = Field(..., description="응답 유형 (keyword/ollama/fallback)", example="keyword")
 
     class Config:
         schema_extra = {
             "example": {
-                "response": "해당 사항은 수강생 공식 안내 페이지(노션) 내 K-Digital Training 수강준비 가이드에 자세히 나와있음을 안내드립니다. 확인하시고 모두 설정 부탁드립니다.",
+                "response": "훈련장려금은 해당 과정의 단위기간 마감일을 기준으로 지급까지 2주에서 3주 가량 소요됩니다\n1단위기간의 경우, 확인할 사항이 많아 시간이 다소 소요될 수 있다는 점 참고 부탁드립니다.",
                 "model": "Keyword-based Fast Response System",
                 "status": "success",
                 "session_id": "123e4567-e89b-12d3-a456-426614174000",
                 "message_id": "456e7890-e89b-12d3-a456-426614174001",
-                "matched_keywords": ["줌", "zoom", "배경", "화면", "설정"],
+                "matched_keywords": ["훈련장려금", "언제", "받기", "단위기간", "2주"],
                 "response_type": "keyword"
             }
         }
@@ -590,14 +587,14 @@ class SessionCreate(BaseModel):
     class Config:
         schema_extra = {
             "example": {
-                "title": "훈련장려금 문의"
+                "title": "출결 및 훈련장려금 문의"
             }
         }
 
 class Session(BaseModel):
     """세션 정보 모델"""
     id: str = Field(..., description="세션 고유 ID", example="123e4567-e89b-12d3-a456-426614174000")
-    title: str = Field(..., description="세션 제목", example="훈련장려금 문의")
+    title: str = Field(..., description="세션 제목", example="출결 및 훈련장려금 문의")
     created_at: str = Field(..., description="생성 시간", example="2024-01-15 10:30:00")
     updated_at: str = Field(..., description="최종 업데이트 시간", example="2024-01-15 11:45:00")
 
@@ -605,7 +602,7 @@ class Session(BaseModel):
         schema_extra = {
             "example": {
                 "id": "123e4567-e89b-12d3-a456-426614174000",
-                "title": "훈련장려금 문의",
+                "title": "출결 및 훈련장려금 문의",
                 "created_at": "2024-01-15 10:30:00",
                 "updated_at": "2024-01-15 11:45:00"
             }
@@ -616,7 +613,7 @@ class Message(BaseModel):
     id: str = Field(..., description="메시지 고유 ID", example="456e7890-e89b-12d3-a456-426614174001")
     session_id: str = Field(..., description="세션 ID", example="123e4567-e89b-12d3-a456-426614174000")
     role: str = Field(..., description="발신자 (user/assistant)", example="user")
-    content: str = Field(..., description="메시지 내용", example="훈련장려금은 얼마인가요?")
+    content: str = Field(..., description="메시지 내용", example="QR코드 찍는 걸 깜빡했는데 출결정정 가능한가요?")
     response_type: Optional[str] = Field(None, description="응답 유형", example="keyword")
     model_used: Optional[str] = Field(None, description="사용된 모델명", example="Keyword-based Fast Response System")
     created_at: str = Field(..., description="생성 시간", example="2024-01-15 10:30:00")
@@ -627,7 +624,7 @@ class Message(BaseModel):
                 "id": "456e7890-e89b-12d3-a456-426614174001",
                 "session_id": "123e4567-e89b-12d3-a456-426614174000",
                 "role": "user",
-                "content": "훈련장려금은 얼마인가요?",
+                "content": "QR코드 찍는 걸 깜빡했는데 출결정정 가능한가요?",
                 "response_type": None,
                 "model_used": None,
                 "created_at": "2024-01-15 10:30:00"
