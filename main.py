@@ -442,6 +442,9 @@ GET /qa-list
 
 # 키워드별 QA 조회
 GET /qa-list?keyword=훈련장려금
+
+# 키워드 검색 (상세 매칭 정보 포함)
+GET /qa-search?q=훈련장려금
 ```
 
 ### 📞 문의
@@ -967,6 +970,9 @@ async def chat_with_hybrid(request: ChatRequest):
         if not request.prompt or not request.prompt.strip():
             raise HTTPException(status_code=400, detail="메시지를 입력해주세요.")
         
+        # 간단한 로깅 (선택적)
+        logger.info(f"사용자 질문: {request.prompt}")
+        
         # 1단계: 키워드 기반 빠른 응답 시도
         best_match, score, matched_keywords = find_best_match(request.prompt)
         
@@ -1027,8 +1033,9 @@ async def chat_with_hybrid(request: ChatRequest):
             response_type=response_type
         )
         
-        # 로그 추가
-        logger.info(f"챗봇 응답 성공: response_type={response_type}")
+        # 로그 추가 (질문-답변 쌍 기록)
+        logger.info(f"챗봇 응답: response_type={response_type}, response_length={len(response)}")
+        logger.info(f"응답 내용: {response[:100]}..." if len(response) > 100 else f"응답 내용: {response}")
         
         return chat_response
         
@@ -1261,6 +1268,71 @@ def get_qa_keywords(include_details: bool = False):
         result["keywords"].append(keyword_data)
     
     return result
+
+@app.get(
+    "/qa-search",
+    summary="🔍 QA 검색",
+    description="키워드로 QA를 검색하고 매칭 결과를 상세히 표시합니다.",
+    response_description="검색 결과와 매칭 정보",
+    tags=["QA"]
+)
+def search_qa(q: str):
+    """
+    ## 🔍 QA 검색 API
+    
+    키워드로 QA를 검색하고 어떤 키워드가 매칭되었는지 상세히 보여줍니다.
+    
+    ### 🔍 쿼리 매개변수
+    - **q**: 검색할 키워드 (필수)
+      - 예: `?q=훈련장려금` - 훈련장려금 관련 QA 검색
+      - 예: `?q=출결` - 출결 관련 QA 검색
+    
+    ### 📋 제공 정보
+    - **search_keyword**: 검색한 키워드
+    - **matched_keywords**: 실제 매칭된 키워드들
+    - **total_count**: 매칭된 QA 개수
+    - **qa_results**: 검색 결과 (매칭 키워드 하이라이트 포함)
+    
+    ### 💡 사용 예시
+    ```
+    GET /qa-search?q=훈련장려금
+    ```
+    """
+    if not q or not q.strip():
+        raise HTTPException(status_code=400, detail="검색 키워드를 입력해주세요.")
+    
+    search_keyword = q.strip().lower()
+    qa_results = []
+    matched_keywords_set = set()
+    
+    for qa_id, qa_data in QA_DATABASE.items():
+        # 매칭된 키워드들 찾기
+        matched_keywords = []
+        for keyword in qa_data["keywords"]:
+            if search_keyword in keyword.lower():
+                matched_keywords.append(keyword)
+                matched_keywords_set.add(keyword)
+        
+        # 매칭된 키워드가 있으면 결과에 추가
+        if matched_keywords:
+            qa_results.append({
+                "id": qa_id,
+                "question": qa_data["question"],
+                "answer": qa_data["answer"],
+                "all_keywords": qa_data["keywords"],
+                "matched_keywords": matched_keywords,
+                "match_score": len(matched_keywords)  # 매칭된 키워드 개수
+            })
+    
+    # 매칭 점수 순으로 정렬 (매칭된 키워드가 많은 순)
+    qa_results.sort(key=lambda x: x["match_score"], reverse=True)
+    
+    return {
+        "search_keyword": q,
+        "matched_keywords": list(matched_keywords_set),
+        "total_count": len(qa_results),
+        "qa_results": qa_results
+    }
 
 # === 대화 기록 관리 API ===
 
