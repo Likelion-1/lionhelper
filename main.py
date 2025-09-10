@@ -490,13 +490,33 @@ GET /qa-list
     ]
 )
 
-# CORS 설정
+# CORS 설정 (Swagger UI와 프론트엔드 호환)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",  # React 개발 서버
+        "http://localhost:3001",  # 대체 React 포트
+        "http://localhost:8000",  # FastAPI 자체 (Swagger UI)
+        "http://localhost:8001",  # 대체 FastAPI 포트
+        "http://127.0.0.1:8000",  # 로컬호스트 대신 IP
+        "http://127.0.0.1:8001",  # 대체 IP 포트
+        "*"  # 개발 중에는 모든 도메인 허용
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=[
+        "Accept",
+        "Accept-Language", 
+        "Content-Language",
+        "Content-Type",
+        "Authorization",
+        "X-Requested-With",
+        "Origin",
+        "Access-Control-Request-Method",
+        "Access-Control-Request-Headers"
+    ],
+    expose_headers=["*"],
+    max_age=86400  # 24시간 preflight 캐시
 )
 
 # 전역 예외 핸들러 추가
@@ -534,6 +554,20 @@ except:
 
 print("하이브리드 AI 챗봇 시스템이 로드되었습니다.")
 print(f"Ollama 모델: {OLLAMA_MODEL}")
+
+# CORS preflight 요청을 위한 OPTIONS 핸들러
+@app.options("/{full_path:path}")
+async def options_handler(request: Request, full_path: str):
+    """모든 경로에 대한 OPTIONS 요청 처리"""
+    return JSONResponse(
+        content="OK",
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+            "Access-Control-Allow-Headers": "Accept, Accept-Language, Content-Language, Content-Type, Authorization, X-Requested-With, Origin",
+            "Access-Control-Max-Age": "86400"
+        }
+    )
 
 # Pydantic 모델
 class ChatRequest(BaseModel):
