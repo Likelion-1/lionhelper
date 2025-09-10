@@ -431,7 +431,6 @@ app = FastAPI(
 POST /chat
 {
   "prompt": "훈련장려금은 얼마인가요?",
-  "session_id": "optional-session-id",
   "use_ollama": true
 }
 
@@ -440,6 +439,9 @@ GET /health
 
 # QA 목록 조회
 GET /qa-list
+
+# 키워드별 QA 조회
+GET /qa-list?keyword=훈련장려금
 ```
 
 ### 📞 문의
@@ -585,7 +587,6 @@ async def options_handler(request: Request, full_path: str):
 class ChatRequest(BaseModel):
     """AI 챗봇 대화 요청 모델"""
     prompt: str = Field(..., description="사용자 질문 또는 메시지", example="훈련장려금은 얼마인가요?")
-    session_id: Optional[str] = Field(None, description="세션 ID (없으면 새 세션 생성)", example="123e4567-e89b-12d3-a456-426614174000")
     max_new_tokens: Optional[int] = Field(512, description="최대 생성 토큰 수", example=512, ge=1, le=2048)
     temperature: Optional[float] = Field(0.6, description="창의성 조절 (0.0-2.0)", example=0.6, ge=0.0, le=2.0)
     top_p: Optional[float] = Field(0.9, description="확률 임계값 (0.0-1.0)", example=0.9, ge=0.0, le=1.0)
@@ -595,7 +596,6 @@ class ChatRequest(BaseModel):
         schema_extra = {
             "example": {
                 "prompt": "훈련장려금은 언제 받을 수 있나요?",
-                "session_id": "123e4567-e89b-12d3-a456-426614174000",
                 "max_new_tokens": 512,
                 "temperature": 0.6,
                 "top_p": 0.9,
@@ -608,8 +608,6 @@ class ChatResponse(BaseModel):
     response: str = Field(..., description="AI의 응답 메시지", example="훈련장려금은 해당 과정의 단위기간 마감일을 기준으로 지급까지 2주에서 3주 가량 소요됩니다")
     model: str = Field(..., description="사용된 모델명", example="Keyword-based Fast Response System")
     status: str = Field(..., description="응답 상태", example="success")
-    session_id: str = Field(..., description="세션 ID", example="123e4567-e89b-12d3-a456-426614174000")
-    message_id: str = Field(..., description="메시지 ID", example="456e7890-e89b-12d3-a456-426614174001")
     matched_keywords: Optional[List[str]] = Field(None, description="매칭된 키워드 목록", example=["훈련장려금", "언제", "받기"])
     response_type: str = Field(..., description="응답 유형 (keyword/ollama/fallback)", example="keyword")
 
@@ -619,8 +617,6 @@ class ChatResponse(BaseModel):
                 "response": "훈련장려금은 해당 과정의 단위기간 마감일을 기준으로 지급까지 2주에서 3주 가량 소요됩니다\n1단위기간의 경우, 확인할 사항이 많아 시간이 다소 소요될 수 있다는 점 참고 부탁드립니다.",
                 "model": "Keyword-based Fast Response System",
                 "status": "success",
-                "session_id": "123e4567-e89b-12d3-a456-426614174000",
-                "message_id": "456e7890-e89b-12d3-a456-426614174001",
                 "matched_keywords": ["훈련장려금", "언제", "받기", "단위기간", "2주"],
                 "response_type": "keyword"
             }
@@ -951,7 +947,6 @@ async def chat_with_hybrid(request: ChatRequest):
     
     ### 📝 요청 데이터
     - **prompt**: 사용자 질문 (필수)
-    - **session_id**: 세션 ID (선택, 없으면 새 세션 생성)
     - **max_new_tokens**: 최대 토큰 수 (기본값: 512)
     - **temperature**: 창의성 조절 (기본값: 0.6)
     - **use_ollama**: Ollama 사용 여부 (기본값: true)
@@ -971,16 +966,6 @@ async def chat_with_hybrid(request: ChatRequest):
         # 입력 검증
         if not request.prompt or not request.prompt.strip():
             raise HTTPException(status_code=400, detail="메시지를 입력해주세요.")
-        
-        # 세션 처리
-        session_id = request.session_id
-        if not session_id:
-            # 새 세션 생성 (첫 메시지의 일부를 제목으로 사용)
-            title = request.prompt[:30] + "..." if len(request.prompt) > 30 else request.prompt
-            session_id = create_session(title)
-        
-        # 사용자 메시지 저장
-        user_message_id = save_message(session_id, "user", request.prompt)
         
         # 1단계: 키워드 기반 빠른 응답 시도
         best_match, score, matched_keywords = find_best_match(request.prompt)
@@ -1033,22 +1018,17 @@ async def chat_with_hybrid(request: ChatRequest):
             response = "죄송합니다. 응답을 생성할 수 없습니다."
             status = "error"
         
-        # AI 응답 저장
-        assistant_message_id = save_message(session_id, "assistant", response, response_type, model_name)
-        
         # 응답 객체 생성
         chat_response = ChatResponse(
             response=response,
             model=model_name,
             status=status,
-            session_id=session_id,
-            message_id=assistant_message_id,
             matched_keywords=matched_keywords if matched_keywords else [],
             response_type=response_type
         )
         
         # 로그 추가
-        logger.info(f"챗봇 응답 성공: session_id={session_id}, response_type={response_type}")
+        logger.info(f"챗봇 응답 성공: response_type={response_type}")
         
         return chat_response
         
