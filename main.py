@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.exceptions import RequestValidationError
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 import uvicorn
 import logging
@@ -390,9 +390,107 @@ QA_DATABASE = {
 
 # FastAPI 앱 초기화
 app = FastAPI(
-    title="한국어 AI 챗봇", 
+    title="라이언 헬퍼 AI 챗봇 API",
     version="3.0.0",
-    description="한국어에 특화된 AI 챗봇 서비스 (키워드 기반 + Ollama GPT-OSS-20B)"
+    description="""
+## 🦁 라이언 헬퍼 - 학생과 기업을 연결하는 플랫폼 API
+
+### 📚 주요 기능
+- 🤖 **AI 챗봇**: 이메일/비밀번호 인증
+- 🎓 **교육 지원**: 이력서, 포트폴리오 관리  
+- 💻 **기업 프로필**: 채용 정보, 기업 소개
+- 💛 **매칭 시스템**: 학생과 기업 연결
+- 🏆 **커뮤니티 기능**: 기업담당자와 수강생 연결 요청 기능
+
+### 🔐 인증 방식
+- JWT Bearer Token 사용
+- 로그인 후 자동 토큰 발급
+- 토큰은 Authorization 헤더에 `Bearer {token}` 형태로 전송
+
+### 👥 사용자 유형
+- **🎓students**: 수강생 (이력서, 포트폴리오 작성)
+- **🏢company**: 기업 (채용 정보, 학생 검색)
+
+### 🔄 개발 환경
+- **🔗Base URL**: `http://localhost:8000`
+- **📖API 문서**: `/docs` (Swagger UI)
+- **🔧대안 문서**: `/redoc` (ReDoc)
+
+### 💡 로그인 플로우
+1. 사용자가 이메일/비밀번호로 회원가입
+2. 로그인 시 JWT 토큰 발급
+3. API 요청 시 Authorization 헤더에 토큰 포함:
+   
+   `Authorization: Bearer {access_token}`
+
+### 🔗 API 사용 예시
+```bash
+# 회원가입
+POST /auth/signup/student
+{
+  "email": "student@example.com",
+  "password": "password123",
+  "name": "홍길동"
+}
+
+# 로그인
+POST /auth/login
+{
+  "email": "student@example.com",
+  "password": "string"
+}
+
+# 인증이 필요한 API 호출
+GET /auth/me
+Authorization: Bearer {access_token}
+```
+
+### 📞 문의
+Contact Lion Helper Team
+
+**License**: MIT
+    """,
+    contact={
+        "name": "Lion Helper Team",
+        "url": "https://lionhelper.com",
+        "email": "support@lionhelper.com"
+    },
+    license_info={
+        "name": "MIT",
+        "url": "https://opensource.org/licenses/MIT"
+    },
+    servers=[
+        {
+            "url": "http://localhost:8000",
+            "description": "개발 서버"
+        },
+        {
+            "url": "https://api.lionhelper.com",
+            "description": "운영 서버"
+        }
+    ],
+    tags_metadata=[
+        {
+            "name": "Chat",
+            "description": "🤖 AI 챗봇 - 하이브리드 시스템을 사용하여 대화를 수행합니다"
+        },
+        {
+            "name": "Health",
+            "description": "🔍 서버 상태 - 서버 및 모델 상태를 확인합니다"
+        },
+        {
+            "name": "Info",
+            "description": "ℹ️ 시스템 정보 - 모델 및 기능 정보를 제공합니다"
+        },
+        {
+            "name": "QA",
+            "description": "❓ QA 관리 - 등록된 질문답변 목록을 관리합니다"
+        },
+        {
+            "name": "Sessions",
+            "description": "💬 대화 기록 - 채팅 세션 및 메시지 관리"
+        }
+    ]
 )
 
 # CORS 설정
@@ -442,39 +540,99 @@ print(f"Ollama 모델: {OLLAMA_MODEL}")
 
 # Pydantic 모델
 class ChatRequest(BaseModel):
-    prompt: str
-    session_id: Optional[str] = None
-    max_new_tokens: Optional[int] = 512
-    temperature: Optional[float] = 0.6
-    top_p: Optional[float] = 0.9
-    use_ollama: Optional[bool] = True  # Ollama 사용 여부
+    """AI 챗봇 대화 요청 모델"""
+    prompt: str = Field(..., description="사용자 질문 또는 메시지", example="훈련장려금은 얼마인가요?")
+    session_id: Optional[str] = Field(None, description="세션 ID (없으면 새 세션 생성)", example="123e4567-e89b-12d3-a456-426614174000")
+    max_new_tokens: Optional[int] = Field(512, description="최대 생성 토큰 수", example=512, ge=1, le=2048)
+    temperature: Optional[float] = Field(0.6, description="창의성 조절 (0.0-2.0)", example=0.6, ge=0.0, le=2.0)
+    top_p: Optional[float] = Field(0.9, description="확률 임계값 (0.0-1.0)", example=0.9, ge=0.0, le=1.0)
+    use_ollama: Optional[bool] = Field(True, description="Ollama AI 모델 사용 여부", example=True)
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "prompt": "줌 배경화면 설정은 어떻게 하나요?",
+                "session_id": "123e4567-e89b-12d3-a456-426614174000",
+                "max_new_tokens": 512,
+                "temperature": 0.6,
+                "top_p": 0.9,
+                "use_ollama": True
+            }
+        }
 
 class ChatResponse(BaseModel):
-    response: str
-    model: str
-    status: str
-    session_id: str
-    message_id: str
-    matched_keywords: Optional[list] = None
-    response_type: str  # "keyword" 또는 "ollama"
+    """AI 챗봇 응답 모델"""
+    response: str = Field(..., description="AI의 응답 메시지", example="해당 사항은 수강생 공식 안내 페이지(노션) 내 K-Digital Training 수강준비 가이드에 자세히 나와있음을 안내드립니다.")
+    model: str = Field(..., description="사용된 모델명", example="Keyword-based Fast Response System")
+    status: str = Field(..., description="응답 상태", example="success")
+    session_id: str = Field(..., description="세션 ID", example="123e4567-e89b-12d3-a456-426614174000")
+    message_id: str = Field(..., description="메시지 ID", example="456e7890-e89b-12d3-a456-426614174001")
+    matched_keywords: Optional[List[str]] = Field(None, description="매칭된 키워드 목록", example=["줌", "배경화면", "설정"])
+    response_type: str = Field(..., description="응답 유형 (keyword/ollama/fallback)", example="keyword")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "response": "해당 사항은 수강생 공식 안내 페이지(노션) 내 K-Digital Training 수강준비 가이드에 자세히 나와있음을 안내드립니다. 확인하시고 모두 설정 부탁드립니다.",
+                "model": "Keyword-based Fast Response System",
+                "status": "success",
+                "session_id": "123e4567-e89b-12d3-a456-426614174000",
+                "message_id": "456e7890-e89b-12d3-a456-426614174001",
+                "matched_keywords": ["줌", "zoom", "배경", "화면", "설정"],
+                "response_type": "keyword"
+            }
+        }
 
 class SessionCreate(BaseModel):
-    title: Optional[str] = "새로운 대화"
+    """새 세션 생성 요청 모델"""
+    title: Optional[str] = Field("새로운 대화", description="세션 제목", example="훈련장려금 문의")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "title": "훈련장려금 문의"
+            }
+        }
 
 class Session(BaseModel):
-    id: str
-    title: str
-    created_at: str
-    updated_at: str
+    """세션 정보 모델"""
+    id: str = Field(..., description="세션 고유 ID", example="123e4567-e89b-12d3-a456-426614174000")
+    title: str = Field(..., description="세션 제목", example="훈련장려금 문의")
+    created_at: str = Field(..., description="생성 시간", example="2024-01-15 10:30:00")
+    updated_at: str = Field(..., description="최종 업데이트 시간", example="2024-01-15 11:45:00")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "id": "123e4567-e89b-12d3-a456-426614174000",
+                "title": "훈련장려금 문의",
+                "created_at": "2024-01-15 10:30:00",
+                "updated_at": "2024-01-15 11:45:00"
+            }
+        }
     
 class Message(BaseModel):
-    id: str
-    session_id: str
-    role: str  # "user" 또는 "assistant"
-    content: str
-    response_type: Optional[str] = None
-    model_used: Optional[str] = None
-    created_at: str
+    """메시지 모델"""
+    id: str = Field(..., description="메시지 고유 ID", example="456e7890-e89b-12d3-a456-426614174001")
+    session_id: str = Field(..., description="세션 ID", example="123e4567-e89b-12d3-a456-426614174000")
+    role: str = Field(..., description="발신자 (user/assistant)", example="user")
+    content: str = Field(..., description="메시지 내용", example="훈련장려금은 얼마인가요?")
+    response_type: Optional[str] = Field(None, description="응답 유형", example="keyword")
+    model_used: Optional[str] = Field(None, description="사용된 모델명", example="Keyword-based Fast Response System")
+    created_at: str = Field(..., description="생성 시간", example="2024-01-15 10:30:00")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "id": "456e7890-e89b-12d3-a456-426614174001",
+                "session_id": "123e4567-e89b-12d3-a456-426614174000",
+                "role": "user",
+                "content": "훈련장려금은 얼마인가요?",
+                "response_type": None,
+                "model_used": None,
+                "created_at": "2024-01-15 10:30:00"
+            }
+        }
 
 def find_best_match(user_input: str) -> tuple:
     """사용자 입력과 가장 잘 매칭되는 QA를 찾습니다."""
@@ -695,21 +853,76 @@ async def call_ollama(prompt: str, max_tokens: int = 512, temperature: float = 0
     logger.error(f"시도한 URL들: {urls_to_try}")
     return "죄송합니다. AI 모델에 연결할 수 없습니다. 키워드 기반 응답만 사용 가능합니다."
 
-@app.get("/")
+@app.get(
+    "/",
+    summary="🏠 메인 페이지",
+    description="라이언 헬퍼 AI 챗봇의 메인 페이지를 반환합니다. 정적 파일이 있으면 HTML을, 없으면 API 정보를 반환합니다.",
+    response_description="메인 페이지 HTML 또는 API 상태 정보",
+    tags=["Info"]
+)
 async def root():
+    """
+    ## 🏠 루트 엔드포인트
+    
+    라이언 헬퍼 AI 챗봇 서비스의 메인 페이지입니다.
+    
+    ### 📋 응답 데이터
+    - **message**: 서비스 설명
+    - **status**: 서버 상태
+    - **model**: 사용 중인 AI 모델
+    - **language**: 지원 언어
+    """
     try:
         return FileResponse("static/index.html")
     except:
         return {
-            "message": "한국어 AI 챗봇 API (하이브리드 시스템)", 
+            "message": "라이언 헬퍼 AI 챗봇 API (하이브리드 시스템)", 
             "status": "running",
             "model": f"Keyword-based + {OLLAMA_MODEL}",
-            "language": "Korean"
+            "language": "Korean",
+            "features": [
+                "키워드 기반 빠른 응답",
+                "AI 생성 응답 (Ollama)",
+                "훈련 관련 정보 제공",
+                "대화 기록 관리"
+            ]
         }
 
-@app.post("/chat", response_model=ChatResponse)
+@app.post(
+    "/chat",
+    response_model=ChatResponse,
+    summary="🤖 AI 챗봇 대화",
+    description="하이브리드 시스템을 사용하여 AI와 대화를 수행합니다. 키워드 기반 빠른 응답과 Ollama AI 모델을 활용합니다.",
+    response_description="AI 챗봇의 응답과 메타데이터",
+    tags=["Chat"]
+)
 async def chat_with_hybrid(request: ChatRequest):
-    """하이브리드 시스템을 사용하여 대화를 수행합니다."""
+    """
+    ## 🤖 AI 챗봇과 대화
+    
+    하이브리드 시스템을 사용하여 사용자와 AI 간의 대화를 처리합니다.
+    
+    ### 🔄 처리 방식
+    1. **1단계**: 키워드 기반 빠른 응답 검색
+    2. **2단계**: 키워드 매칭 실패 시 Ollama AI 모델 사용
+    
+    ### 📝 요청 데이터
+    - **prompt**: 사용자 질문 (필수)
+    - **session_id**: 세션 ID (선택, 없으면 새 세션 생성)
+    - **max_new_tokens**: 최대 토큰 수 (기본값: 512)
+    - **temperature**: 창의성 조절 (기본값: 0.6)
+    - **use_ollama**: Ollama 사용 여부 (기본값: true)
+    
+    ### 🎯 응답 유형
+    - **keyword**: 키워드 기반 빠른 응답
+    - **ollama**: AI 모델 생성 응답
+    - **fallback**: 기본 안내 응답
+    
+    ### 💡 주요 기능
+    - 훈련장려금, 출결, 공결 관련 즉시 답변
+    - 줌, 수업, 노트북 관련 정보 제공
+    - 취업, 인턴십, 커리어 상담 안내
+    """
     
     try:
         # 입력 검증
@@ -803,9 +1016,31 @@ async def chat_with_hybrid(request: ChatRequest):
         logger.error(f"채팅 오류: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"내부 서버 오류가 발생했습니다: {str(e)}")
 
-@app.get("/health")
+@app.get(
+    "/health",
+    summary="🔍 서버 상태 확인",
+    description="서버와 AI 모델의 상태를 확인합니다. 시스템 헬스체크 및 연결 상태를 점검할 수 있습니다.",
+    response_description="서버 상태 및 모델 연결 정보",
+    tags=["Health"]
+)
 def health_check():
-    """서버 상태를 확인합니다."""
+    """
+    ## 🔍 헬스체크 API
+    
+    서버와 AI 모델의 전반적인 상태를 확인합니다.
+    
+    ### 📊 체크 항목
+    - **서버 상태**: 기본 서버 동작 확인
+    - **Ollama 연결**: AI 모델 서버 연결 상태
+    - **QA 데이터베이스**: 키워드 데이터 개수
+    - **응답 모드**: 현재 설정된 응답 시스템
+    
+    ### 🎯 응답 상태
+    - **healthy**: 정상 동작
+    - **connected**: Ollama 연결 성공
+    - **disconnected**: Ollama 연결 실패
+    - **error**: Ollama 오류 발생
+    """
     # Ollama 연결 상태 확인 (빠른 체크)
     ollama_status = "unknown"
     try:
@@ -830,9 +1065,26 @@ def health_check():
         "timeout_settings": "5s_connection_30s_graceful"
     }
 
-@app.get("/info")
+@app.get(
+    "/info",
+    summary="ℹ️ 시스템 정보",
+    description="AI 모델과 시스템 기능에 대한 상세 정보를 제공합니다.",
+    response_description="모델 정보 및 시스템 기능 목록",
+    tags=["Info"]
+)
 def get_info():
-    """모델 정보를 반환합니다."""
+    """
+    ## ℹ️ 시스템 정보 API
+    
+    사용 중인 AI 모델과 시스템의 주요 기능을 확인할 수 있습니다.
+    
+    ### 📋 제공 정보
+    - **모델명**: 하이브리드 AI 시스템 정보
+    - **모델 타입**: 시스템 구성 방식
+    - **기능 목록**: 지원하는 주요 기능들
+    - **QA 주제**: 키워드 기반 응답 가능한 주제들
+    - **Ollama 모델**: 사용 중인 AI 모델명
+    """
     return {
         "model_name": f"Hybrid System: Keyword-based + {OLLAMA_MODEL}",
         "model_type": "Hybrid AI System",
@@ -848,9 +1100,35 @@ def get_info():
         "ollama_model": OLLAMA_MODEL
     }
 
-@app.get("/qa-list")
+@app.get(
+    "/qa-list",
+    summary="❓ QA 목록 조회",
+    description="키워드 기반 응답이 가능한 등록된 질문답변 목록을 확인합니다.",
+    response_description="QA 목록과 키워드 정보",
+    tags=["QA"]
+)
 def get_qa_list():
-    """등록된 QA 목록을 반환합니다."""
+    """
+    ## ❓ QA 목록 조회 API
+    
+    시스템에 등록된 모든 질문답변 쌍과 키워드 정보를 확인할 수 있습니다.
+    
+    ### 📋 제공 정보
+    - **id**: QA 항목 고유 식별자
+    - **question**: 질문 내용
+    - **keywords**: 매칭되는 키워드 목록
+    
+    ### 🔍 활용 방법
+    - 키워드를 포함한 질문 시 빠른 응답 가능
+    - 시스템이 답변할 수 있는 주제 확인
+    - API 테스트 및 개발 참고용
+    
+    ### 📊 카테고리
+    - **훈련장려금**: 계좌, 금액, 지급시기
+    - **출결관리**: QR코드, 지각, 결석, 공결
+    - **교육지원**: 줌, 노트북, 교재
+    - **커리어**: 취업, 인턴십, 포트폴리오
+    """
     return {
         "qa_list": [
             {
@@ -864,9 +1142,34 @@ def get_qa_list():
 
 # === 대화 기록 관리 API ===
 
-@app.post("/sessions", response_model=Session)
+@app.post(
+    "/sessions",
+    response_model=Session,
+    summary="💬 새 대화 세션 생성",
+    description="새로운 채팅 세션을 생성합니다. 대화 기록을 구분하여 관리할 수 있습니다.",
+    response_description="생성된 세션 정보",
+    tags=["Sessions"]
+)
 def create_new_session(session_data: SessionCreate):
-    """새로운 채팅 세션 생성"""
+    """
+    ## 💬 새 대화 세션 생성
+    
+    새로운 채팅 세션을 생성하여 대화를 시작할 수 있습니다.
+    
+    ### 📝 요청 데이터
+    - **title**: 세션 제목 (선택, 기본값: "새로운 대화")
+    
+    ### 📋 응답 데이터
+    - **id**: 세션 고유 ID
+    - **title**: 세션 제목
+    - **created_at**: 생성 시간
+    - **updated_at**: 최종 업데이트 시간
+    
+    ### 💡 활용 방법
+    - 주제별로 대화를 구분하여 관리
+    - 세션 ID를 챗봇 API에 전달하여 연속 대화
+    - 대화 기록 추적 및 관리
+    """
     session_id = create_session(session_data.title)
     sessions = get_sessions()
     for session in sessions:
@@ -874,14 +1177,64 @@ def create_new_session(session_data: SessionCreate):
             return session
     raise HTTPException(status_code=500, detail="세션 생성에 실패했습니다.")
 
-@app.get("/sessions", response_model=List[Session])
+@app.get(
+    "/sessions",
+    response_model=List[Session],
+    summary="📋 대화 세션 목록 조회",
+    description="모든 채팅 세션의 목록을 최신순으로 조회합니다.",
+    response_description="세션 목록 (최신순 정렬)",
+    tags=["Sessions"]
+)
 def list_sessions():
-    """모든 채팅 세션 목록 조회"""
+    """
+    ## 📋 대화 세션 목록 조회
+    
+    생성된 모든 채팅 세션을 최신 업데이트 순으로 조회합니다.
+    
+    ### 📋 응답 데이터
+    - **Array of Session**: 세션 목록
+      - **id**: 세션 고유 ID
+      - **title**: 세션 제목
+      - **created_at**: 생성 시간
+      - **updated_at**: 최종 업데이트 시간
+    
+    ### 🔄 정렬 기준
+    - 최근 업데이트된 세션이 먼저 표시
+    - 활발한 대화 세션을 우선적으로 확인 가능
+    """
     return get_sessions()
 
-@app.get("/sessions/{session_id}/messages", response_model=List[Message])
+@app.get(
+    "/sessions/{session_id}/messages",
+    response_model=List[Message],
+    summary="💬 세션 메시지 조회",
+    description="특정 세션의 모든 메시지를 시간순으로 조회합니다.",
+    response_description="메시지 목록 (시간순 정렬)",
+    tags=["Sessions"]
+)
 def get_messages(session_id: str):
-    """특정 세션의 메시지 목록 조회"""
+    """
+    ## 💬 세션 메시지 조회
+    
+    특정 세션의 모든 대화 메시지를 시간 순서대로 조회합니다.
+    
+    ### 🔗 경로 매개변수
+    - **session_id**: 세션 고유 ID
+    
+    ### 📋 응답 데이터
+    - **Array of Message**: 메시지 목록
+      - **id**: 메시지 고유 ID
+      - **session_id**: 세션 ID
+      - **role**: 발신자 (user/assistant)
+      - **content**: 메시지 내용
+      - **response_type**: 응답 유형 (keyword/ollama)
+      - **model_used**: 사용된 모델명
+      - **created_at**: 생성 시간
+    
+    ### 🔄 정렬 기준
+    - 시간순 정렬 (오래된 메시지부터)
+    - 대화 흐름을 자연스럽게 추적 가능
+    """
     messages = get_session_messages(session_id)
     if not messages:
         # 빈 세션이거나 존재하지 않는 세션인지 확인
@@ -891,18 +1244,67 @@ def get_messages(session_id: str):
             raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
     return messages
 
-@app.delete("/sessions/{session_id}")
+@app.delete(
+    "/sessions/{session_id}",
+    summary="🗑️ 세션 삭제",
+    description="지정된 세션과 관련된 모든 메시지를 삭제합니다.",
+    response_description="삭제 완료 메시지",
+    tags=["Sessions"]
+)
 def remove_session(session_id: str):
-    """세션 삭제"""
+    """
+    ## 🗑️ 세션 삭제
+    
+    지정된 세션과 해당 세션의 모든 메시지를 영구적으로 삭제합니다.
+    
+    ### 🔗 경로 매개변수
+    - **session_id**: 삭제할 세션 ID
+    
+    ### ⚠️ 주의사항
+    - 삭제된 세션과 메시지는 복구할 수 없습니다
+    - 삭제 전에 중요한 대화 내용을 백업하세요
+    
+    ### 📋 응답 데이터
+    - **message**: 삭제 완료 메시지
+    - **session_id**: 삭제된 세션 ID
+    """
     try:
         delete_session(session_id)
         return {"message": "세션이 삭제되었습니다.", "session_id": session_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"세션 삭제 중 오류가 발생했습니다: {str(e)}")
 
-@app.put("/sessions/{session_id}/title")
+@app.put(
+    "/sessions/{session_id}/title",
+    summary="✏️ 세션 제목 변경",
+    description="지정된 세션의 제목을 변경합니다.",
+    response_description="제목 변경 완료 메시지",
+    tags=["Sessions"]
+)
 def rename_session(session_id: str, title_data: dict):
-    """세션 제목 변경"""
+    """
+    ## ✏️ 세션 제목 변경
+    
+    지정된 세션의 제목을 새로운 제목으로 변경합니다.
+    
+    ### 🔗 경로 매개변수
+    - **session_id**: 제목을 변경할 세션 ID
+    
+    ### 📝 요청 데이터
+    - **title**: 새로운 세션 제목 (필수)
+    
+    ### 📋 응답 데이터
+    - **message**: 변경 완료 메시지
+    - **session_id**: 세션 ID
+    - **title**: 변경된 제목
+    
+    ### 💡 활용 예시
+    ```json
+    {
+      "title": "훈련장려금 및 출결 문의"
+    }
+    ```
+    """
     title = title_data.get("title")
     if not title:
         raise HTTPException(status_code=400, detail="제목을 입력해주세요.")
@@ -913,9 +1315,32 @@ def rename_session(session_id: str, title_data: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"제목 변경 중 오류가 발생했습니다: {str(e)}")
 
-@app.get("/sessions/{session_id}", response_model=Session)
+@app.get(
+    "/sessions/{session_id}",
+    response_model=Session,
+    summary="🔍 세션 정보 조회",
+    description="지정된 세션의 상세 정보를 조회합니다.",
+    response_description="세션 상세 정보",
+    tags=["Sessions"]
+)
 def get_session_info(session_id: str):
-    """특정 세션 정보 조회"""
+    """
+    ## 🔍 세션 정보 조회
+    
+    지정된 세션의 상세 정보를 조회합니다.
+    
+    ### 🔗 경로 매개변수
+    - **session_id**: 조회할 세션 ID
+    
+    ### 📋 응답 데이터
+    - **id**: 세션 고유 ID
+    - **title**: 세션 제목
+    - **created_at**: 생성 시간
+    - **updated_at**: 최종 업데이트 시간
+    
+    ### 🚫 오류 응답
+    - **404**: 세션을 찾을 수 없음
+    """
     sessions = get_sessions()
     for session in sessions:
         if session.id == session_id:
