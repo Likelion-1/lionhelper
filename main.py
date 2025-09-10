@@ -678,7 +678,7 @@ class Message(BaseModel):
 
 def find_best_match(user_input: str) -> tuple:
     """사용자 입력과 가장 잘 매칭되는 QA를 찾습니다."""
-    user_input_lower = user_input.lower()
+    user_input_lower = user_input.lower().strip()
     best_match = None
     best_score = 0
     matched_keywords = []
@@ -687,30 +687,40 @@ def find_best_match(user_input: str) -> tuple:
         score = 0
         keywords_found = []
         
-        # 키워드 매칭 (더 관대하게)
+        # 1. 정확한 키워드 매칭 (높은 가중치)
         for keyword in qa_data["keywords"]:
-            if keyword.lower() in user_input_lower:
-                score += 3  # 키워드 가중치 증가
+            keyword_lower = keyword.lower()
+            if keyword_lower in user_input_lower:
+                score += 5  # 정확한 매칭은 높은 점수
                 keywords_found.append(keyword)
         
-        # 부분 매칭도 고려
+        # 2. 부분 키워드 매칭 (중간 가중치)
         for keyword in qa_data["keywords"]:
-            if len(keyword) > 2:  # 2글자 이상 키워드
-                for word in user_input_lower.split():
-                    if keyword.lower() in word or word in keyword.lower():
-                        score += 1
-                        if keyword not in keywords_found:
+            keyword_lower = keyword.lower()
+            if len(keyword_lower) >= 2:  # 2글자 이상 키워드만
+                # 사용자 입력의 각 단어와 비교
+                user_words = user_input_lower.replace('?', '').replace('!', '').replace('.', '').split()
+                for word in user_words:
+                    if len(word) >= 2:
+                        # 키워드가 단어에 포함되거나, 단어가 키워드에 포함되는 경우
+                        if (keyword_lower in word or word in keyword_lower) and keyword not in keywords_found:
+                            score += 2  # 부분 매칭은 중간 점수
                             keywords_found.append(keyword)
         
-        # 질문과의 유사도 계산 (가중치 감소)
+        # 3. 질문 유사도 (낮은 가중치)
         question_similarity = SequenceMatcher(None, user_input_lower, qa_data["question"].lower()).ratio()
-        score += question_similarity * 2
+        if question_similarity > 0.3:  # 30% 이상 유사할 때만
+            score += question_similarity * 1  # 낮은 가중치
+        
+        # 4. 답변 내용 유사도 (매우 낮은 가중치)
+        answer_similarity = SequenceMatcher(None, user_input_lower, qa_data["answer"].lower()).ratio()
+        if answer_similarity > 0.4:  # 40% 이상 유사할 때만
+            score += answer_similarity * 0.5  # 매우 낮은 가중치
         
         if score > best_score:
             best_score = score
             best_match = qa_data
             matched_keywords = keywords_found
-    
     return best_match, best_score, matched_keywords
 
 def create_session(title: str = "새로운 대화") -> str:
@@ -976,7 +986,7 @@ async def chat_with_hybrid(request: ChatRequest):
         # 1단계: 키워드 기반 빠른 응답 시도
         best_match, score, matched_keywords = find_best_match(request.prompt)
         
-        if best_match and score > 0.5:  # 임계값 낮춤 (더 빠른 응답)
+        if best_match and score > 0.1:  # 임계값 대폭 낮춤 (더 많은 매칭)
             response = best_match["answer"]
             status = "success"
             response_type = "keyword"
