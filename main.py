@@ -1189,20 +1189,25 @@ def get_qa_list(keyword: Optional[str] = None):
     response_description="키워드 목록과 각 키워드별 QA 개수",
     tags=["QA"]
 )
-def get_qa_keywords():
+def get_qa_keywords(include_details: bool = False):
     """
     ## 🏷️ QA 키워드 목록 API
     
     메인 페이지의 키워드 버튼에 사용할 수 있는 모든 키워드와 각 키워드별 QA 개수를 제공합니다.
     
+    ### 🔍 쿼리 매개변수
+    - **include_details**: 상세 QA 정보 포함 여부 (기본값: false)
+      - false: 키워드와 개수만 반환 (메인 페이지용)
+      - true: 모든 QA 정보도 포함 (상세 페이지용)
+    
     ### 📋 제공 정보
     - **keyword**: 키워드명
     - **count**: 해당 키워드가 포함된 QA 개수
-    - **sample_questions**: 해당 키워드 관련 대표 질문들 (최대 3개)
+    - **qa_list**: 해당 키워드의 모든 QA (include_details=true일 때만)
     
     ### 💡 활용 방법
-    - 메인 페이지 키워드 버튼 생성
-    - 키워드별 QA 개수 표시
+    - 메인 페이지 키워드 버튼: `/qa-keywords`
+    - 키워드별 상세 정보: `/qa-keywords?include_details=true`
     - 인기 키워드 순서로 정렬
     """
     keyword_stats = {}
@@ -1213,11 +1218,20 @@ def get_qa_keywords():
             if keyword not in keyword_stats:
                 keyword_stats[keyword] = {
                     "count": 0,
-                    "questions": []
+                    "qa_list": [],
+                    "qa_ids": set()  # 중복 방지용
                 }
-            keyword_stats[keyword]["count"] += 1
-            if len(keyword_stats[keyword]["questions"]) < 3:
-                keyword_stats[keyword]["questions"].append(qa_data["question"])
+            
+            # 같은 QA가 아직 추가되지 않았다면 추가
+            if qa_id not in keyword_stats[keyword]["qa_ids"]:
+                keyword_stats[keyword]["count"] += 1
+                keyword_stats[keyword]["qa_ids"].add(qa_id)
+                keyword_stats[keyword]["qa_list"].append({
+                    "id": qa_id,
+                    "question": qa_data["question"],
+                    "answer": qa_data["answer"],
+                    "keywords": qa_data["keywords"]
+                })
     
     # 개수 순으로 정렬하여 반환
     sorted_keywords = sorted(
@@ -1226,17 +1240,27 @@ def get_qa_keywords():
         reverse=True
     )
     
-    return {
+    result = {
         "total_keywords": len(keyword_stats),
-        "keywords": [
-            {
-                "keyword": keyword,
-                "count": stats["count"],
-                "sample_questions": stats["questions"]
-            }
-            for keyword, stats in sorted_keywords
-        ]
+        "keywords": []
     }
+    
+    for keyword, stats in sorted_keywords:
+        keyword_data = {
+            "keyword": keyword,
+            "count": stats["count"]
+        }
+        
+        # include_details가 True일 때만 QA 목록 포함
+        if include_details:
+            keyword_data["qa_list"] = stats["qa_list"]
+        else:
+            # 간단한 미리보기용으로 첫 번째 질문만 포함
+            keyword_data["sample_question"] = stats["qa_list"][0]["question"] if stats["qa_list"] else ""
+        
+        result["keywords"].append(keyword_data)
+    
+    return result
 
 # === 대화 기록 관리 API ===
 
