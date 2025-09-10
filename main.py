@@ -458,6 +458,10 @@ GET /qa-list
     },
     servers=[
         {
+            "url": "https://lionhelper.onrender.com",
+            "description": "운영 서버 (Render.com)"
+        },
+        {
             "url": "http://localhost:8000",
             "description": "로컬 개발 서버"
         },
@@ -493,31 +497,24 @@ GET /qa-list
 # CORS 설정 (Swagger UI와 프론트엔드 호환)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",  # React 개발 서버
-        "http://localhost:3001",  # 대체 React 포트
-        "http://localhost:8000",  # FastAPI 자체 (Swagger UI)
-        "http://localhost:8001",  # 대체 FastAPI 포트
-        "http://127.0.0.1:8000",  # 로컬호스트 대신 IP
-        "http://127.0.0.1:8001",  # 대체 IP 포트
-        "*"  # 개발 중에는 모든 도메인 허용
-    ],
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-    allow_headers=[
-        "Accept",
-        "Accept-Language", 
-        "Content-Language",
-        "Content-Type",
-        "Authorization",
-        "X-Requested-With",
-        "Origin",
-        "Access-Control-Request-Method",
-        "Access-Control-Request-Headers"
-    ],
+    allow_origins=["*"],  # 모든 도메인 허용 (개발용)
+    allow_credentials=False,  # 개발 중에는 false로 설정
+    allow_methods=["*"],  # 모든 메서드 허용
+    allow_headers=["*"],  # 모든 헤더 허용
     expose_headers=["*"],
-    max_age=86400  # 24시간 preflight 캐시
+    max_age=86400
 )
+
+# 추가 CORS 미들웨어 (강제 헤더 추가)
+@app.middleware("http")
+async def add_cors_headers(request: Request, call_next):
+    """모든 응답에 CORS 헤더 강제 추가"""
+    response = await call_next(request)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    response.headers["Access-Control-Expose-Headers"] = "*"
+    return response
 
 # 전역 예외 핸들러 추가
 @app.exception_handler(Exception)
@@ -526,7 +523,12 @@ async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"예상치 못한 오류: {str(exc)}", exc_info=True)
     return JSONResponse(
         status_code=500,
-        content={"detail": f"내부 서버 오류: {str(exc)}"}
+        content={"detail": f"내부 서버 오류: {str(exc)}"},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+            "Access-Control-Allow-Headers": "*"
+        }
     )
 
 @app.exception_handler(RequestValidationError)
@@ -535,7 +537,12 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     logger.error(f"요청 검증 오류: {str(exc)}")
     return JSONResponse(
         status_code=422,
-        content={"detail": "요청 데이터가 유효하지 않습니다.", "errors": exc.errors()}
+        content={"detail": "요청 데이터가 유효하지 않습니다.", "errors": exc.errors()},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+            "Access-Control-Allow-Headers": "*"
+        }
     )
 
 @app.exception_handler(HTTPException)
@@ -543,7 +550,12 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     """HTTP 예외에 대한 JSON 응답을 보장합니다."""
     return JSONResponse(
         status_code=exc.status_code,
-        content={"detail": exc.detail}
+        content={"detail": exc.detail},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+            "Access-Control-Allow-Headers": "*"
+        }
     )
 
 # 정적 파일 서빙 설정
