@@ -442,9 +442,6 @@ GET /qa-list
 
 # 키워드별 QA 조회
 GET /qa-list?keyword=훈련장려금
-
-# 키워드 검색 (상세 매칭 정보 포함)
-GET /qa-search?q=훈련장려금
 ```
 
 ### 📞 문의
@@ -1151,30 +1148,37 @@ def get_qa_list(keyword: Optional[str] = None):
     """
     ## ❓ QA 목록 조회 API
     
-    시스템에 등록된 질문답변 쌍과 키워드 정보를 확인할 수 있습니다.
+    시스템에 등록된 모든 질문답변 쌍을 조회하거나 특정 키워드로 필터링할 수 있습니다.
+    이 API는 키워드 검색, QA 관리, 프론트엔드 연동에 사용됩니다.
     
     ### 🔍 쿼리 매개변수
     - **keyword**: 특정 키워드로 필터링 (선택사항)
       - 예: `?keyword=훈련장려금` - 훈련장려금 관련 QA만 조회
       - 예: `?keyword=출결` - 출결 관련 QA만 조회
+      - 예: `?keyword=줌` - 줌 관련 QA만 조회
     
-    ### 📋 제공 정보
-    - **id**: QA 항목 고유 식별자
-    - **question**: 질문 내용
-    - **answer**: 답변 내용
-    - **keywords**: 매칭되는 키워드 목록
+    ### 📋 응답 정보
+    - **total_count**: 조회된 QA 총 개수
+    - **keyword_filter**: 적용된 키워드 필터 (없으면 null)
+    - **qa_list**: QA 목록 배열
+      - **id**: QA 고유 식별자
+      - **question**: 질문 내용
+      - **answer**: 답변 내용
+      - **keywords**: 매칭 키워드 목록
     
-    ### 🔍 활용 방법
-    - 전체 QA 목록 조회: `/qa-list`
-    - 키워드 필터링: `/qa-list?keyword=훈련장려금`
-    - 메인 페이지 키워드 버튼 연동
-    - API 테스트 및 개발 참고용
+    ### 💡 활용 방법
+    - **전체 QA 조회**: `/qa-list` - 모든 QA 목록
+    - **키워드 검색**: `/qa-list?keyword=훈련장려금` - 특정 키워드 관련 QA
+    - **프론트엔드 연동**: 메인 페이지 키워드 버튼 클릭 시 사용
+    - **개발/테스트**: API 동작 확인 및 QA 데이터 검증
     
     ### 📊 주요 키워드 카테고리
-    - **훈련장려금**: 계좌, 금액, 지급시기, 수령
-    - **출결**: QR코드, 지각, 결석, 공결
-    - **줌**: 배경화면, 설정, 접속, 카메라
-    - **노트북**: 대여, 반납, 고장, 수리
+    - **훈련장려금**: 계좌, 금액, 지급시기, 수령 관련
+    - **출결**: QR코드, 지각, 결석, 공결 관련  
+    - **줌**: 배경화면, 설정, 접속, 카메라 관련
+    - **노트북**: 대여, 반납, 고장, 수리 관련
+    - **교육**: 수업, 강의, 교재, 평가 관련
+    - **행정**: 서류, 증명서, 계좌, 휴가 관련
     """
     qa_list = []
     
@@ -1199,150 +1203,7 @@ def get_qa_list(keyword: Optional[str] = None):
         "qa_list": qa_list
     }
 
-@app.get(
-    "/qa-keywords",
-    summary="🏷️ QA 키워드 목록",
-    description="메인 페이지 버튼에 사용할 수 있는 모든 키워드 목록을 반환합니다.",
-    response_description="키워드 목록과 각 키워드별 QA 개수",
-    tags=["QA"]
-)
-def get_qa_keywords(include_details: bool = False):
-    """
-    ## 🏷️ QA 키워드 목록 API
-    
-    메인 페이지의 키워드 버튼에 사용할 수 있는 모든 키워드와 각 키워드별 QA 개수를 제공합니다.
-    
-    ### 🔍 쿼리 매개변수
-    - **include_details**: 상세 QA 정보 포함 여부 (기본값: false)
-      - false: 키워드와 개수만 반환 (메인 페이지용)
-      - true: 모든 QA 정보도 포함 (상세 페이지용)
-    
-    ### 📋 제공 정보
-    - **keyword**: 키워드명
-    - **count**: 해당 키워드가 포함된 QA 개수
-    - **qa_list**: 해당 키워드의 모든 QA (include_details=true일 때만)
-    
-    ### 💡 활용 방법
-    - 메인 페이지 키워드 버튼: `/qa-keywords`
-    - 키워드별 상세 정보: `/qa-keywords?include_details=true`
-    - 인기 키워드 순서로 정렬
-    """
-    keyword_stats = {}
-    
-    # 모든 QA를 순회하며 키워드 통계 수집
-    for qa_id, qa_data in QA_DATABASE.items():
-        for keyword in qa_data["keywords"]:
-            if keyword not in keyword_stats:
-                keyword_stats[keyword] = {
-                    "count": 0,
-                    "qa_list": [],
-                    "qa_ids": set()  # 중복 방지용
-                }
-            
-            # 같은 QA가 아직 추가되지 않았다면 추가
-            if qa_id not in keyword_stats[keyword]["qa_ids"]:
-                keyword_stats[keyword]["count"] += 1
-                keyword_stats[keyword]["qa_ids"].add(qa_id)
-                keyword_stats[keyword]["qa_list"].append({
-                    "id": qa_id,
-                    "question": qa_data["question"],
-                    "answer": qa_data["answer"],
-                    "keywords": qa_data["keywords"]
-                })
-    
-    # 개수 순으로 정렬하여 반환
-    sorted_keywords = sorted(
-        keyword_stats.items(), 
-        key=lambda x: x[1]["count"], 
-        reverse=True
-    )
-    
-    result = {
-        "total_keywords": len(keyword_stats),
-        "keywords": []
-    }
-    
-    for keyword, stats in sorted_keywords:
-        keyword_data = {
-            "keyword": keyword,
-            "count": stats["count"]
-        }
-        
-        # include_details가 True일 때만 QA 목록 포함
-        if include_details:
-            keyword_data["qa_list"] = stats["qa_list"]
-        else:
-            # 간단한 미리보기용으로 첫 번째 질문만 포함
-            keyword_data["sample_question"] = stats["qa_list"][0]["question"] if stats["qa_list"] else ""
-        
-        result["keywords"].append(keyword_data)
-    
-    return result
 
-@app.get(
-    "/qa-search",
-    summary="🔍 QA 검색",
-    description="키워드로 QA를 검색하고 매칭 결과를 상세히 표시합니다.",
-    response_description="검색 결과와 매칭 정보",
-    tags=["QA"]
-)
-def search_qa(q: str):
-    """
-    ## 🔍 QA 검색 API
-    
-    키워드로 QA를 검색하고 어떤 키워드가 매칭되었는지 상세히 보여줍니다.
-    
-    ### 🔍 쿼리 매개변수
-    - **q**: 검색할 키워드 (필수)
-      - 예: `?q=훈련장려금` - 훈련장려금 관련 QA 검색
-      - 예: `?q=출결` - 출결 관련 QA 검색
-    
-    ### 📋 제공 정보
-    - **search_keyword**: 검색한 키워드
-    - **matched_keywords**: 실제 매칭된 키워드들
-    - **total_count**: 매칭된 QA 개수
-    - **qa_results**: 검색 결과 (매칭 키워드 하이라이트 포함)
-    
-    ### 💡 사용 예시
-    ```
-    GET /qa-search?q=훈련장려금
-    ```
-    """
-    if not q or not q.strip():
-        raise HTTPException(status_code=400, detail="검색 키워드를 입력해주세요.")
-    
-    search_keyword = q.strip().lower()
-    qa_results = []
-    matched_keywords_set = set()
-    
-    for qa_id, qa_data in QA_DATABASE.items():
-        # 매칭된 키워드들 찾기
-        matched_keywords = []
-        for keyword in qa_data["keywords"]:
-            if search_keyword in keyword.lower():
-                matched_keywords.append(keyword)
-                matched_keywords_set.add(keyword)
-        
-        # 매칭된 키워드가 있으면 결과에 추가
-        if matched_keywords:
-            qa_results.append({
-                "id": qa_id,
-                "question": qa_data["question"],
-                "answer": qa_data["answer"],
-                "all_keywords": qa_data["keywords"],
-                "matched_keywords": matched_keywords,
-                "match_score": len(matched_keywords)  # 매칭된 키워드 개수
-            })
-    
-    # 매칭 점수 순으로 정렬 (매칭된 키워드가 많은 순)
-    qa_results.sort(key=lambda x: x["match_score"], reverse=True)
-    
-    return {
-        "search_keyword": q,
-        "matched_keywords": list(matched_keywords_set),
-        "total_count": len(qa_results),
-        "qa_results": qa_results
-    }
 
 # === 대화 기록 관리 API ===
 
