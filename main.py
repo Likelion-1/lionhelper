@@ -1146,40 +1146,115 @@ def get_info():
 @app.get(
     "/qa-list",
     summary="❓ QA 목록 조회",
-    description="키워드 기반 응답이 가능한 등록된 질문답변 목록을 확인합니다.",
+    description="키워드 기반 응답이 가능한 등록된 질문답변 목록을 확인합니다. 키워드로 필터링 가능합니다.",
     response_description="QA 목록과 키워드 정보",
     tags=["QA"]
 )
-def get_qa_list():
+def get_qa_list(keyword: Optional[str] = None):
     """
     ## ❓ QA 목록 조회 API
     
-    시스템에 등록된 모든 질문답변 쌍과 키워드 정보를 확인할 수 있습니다.
+    시스템에 등록된 질문답변 쌍과 키워드 정보를 확인할 수 있습니다.
+    
+    ### 🔍 쿼리 매개변수
+    - **keyword**: 특정 키워드로 필터링 (선택사항)
+      - 예: `?keyword=훈련장려금` - 훈련장려금 관련 QA만 조회
+      - 예: `?keyword=출결` - 출결 관련 QA만 조회
     
     ### 📋 제공 정보
     - **id**: QA 항목 고유 식별자
     - **question**: 질문 내용
+    - **answer**: 답변 내용
     - **keywords**: 매칭되는 키워드 목록
     
     ### 🔍 활용 방법
-    - 키워드를 포함한 질문 시 빠른 응답 가능
-    - 시스템이 답변할 수 있는 주제 확인
+    - 전체 QA 목록 조회: `/qa-list`
+    - 키워드 필터링: `/qa-list?keyword=훈련장려금`
+    - 메인 페이지 키워드 버튼 연동
     - API 테스트 및 개발 참고용
     
-    ### 📊 카테고리
-    - **훈련장려금**: 계좌, 금액, 지급시기
-    - **출결관리**: QR코드, 지각, 결석, 공결
-    - **교육지원**: 줌, 노트북, 교재
-    - **커리어**: 취업, 인턴십, 포트폴리오
+    ### 📊 주요 키워드 카테고리
+    - **훈련장려금**: 계좌, 금액, 지급시기, 수령
+    - **출결**: QR코드, 지각, 결석, 공결
+    - **줌**: 배경화면, 설정, 접속, 카메라
+    - **노트북**: 대여, 반납, 고장, 수리
     """
+    qa_list = []
+    
+    for qa_id, qa_data in QA_DATABASE.items():
+        # 키워드 필터링
+        if keyword:
+            # 키워드가 QA의 키워드 목록에 포함되는지 확인 (대소문자 무시)
+            keyword_lower = keyword.lower()
+            if not any(keyword_lower in kw.lower() for kw in qa_data["keywords"]):
+                continue
+        
+        qa_list.append({
+            "id": qa_id,
+            "question": qa_data["question"],
+            "answer": qa_data["answer"],
+            "keywords": qa_data["keywords"]
+        })
+    
     return {
-        "qa_list": [
+        "total_count": len(qa_list),
+        "keyword_filter": keyword,
+        "qa_list": qa_list
+    }
+
+@app.get(
+    "/qa-keywords",
+    summary="🏷️ QA 키워드 목록",
+    description="메인 페이지 버튼에 사용할 수 있는 모든 키워드 목록을 반환합니다.",
+    response_description="키워드 목록과 각 키워드별 QA 개수",
+    tags=["QA"]
+)
+def get_qa_keywords():
+    """
+    ## 🏷️ QA 키워드 목록 API
+    
+    메인 페이지의 키워드 버튼에 사용할 수 있는 모든 키워드와 각 키워드별 QA 개수를 제공합니다.
+    
+    ### 📋 제공 정보
+    - **keyword**: 키워드명
+    - **count**: 해당 키워드가 포함된 QA 개수
+    - **sample_questions**: 해당 키워드 관련 대표 질문들 (최대 3개)
+    
+    ### 💡 활용 방법
+    - 메인 페이지 키워드 버튼 생성
+    - 키워드별 QA 개수 표시
+    - 인기 키워드 순서로 정렬
+    """
+    keyword_stats = {}
+    
+    # 모든 QA를 순회하며 키워드 통계 수집
+    for qa_id, qa_data in QA_DATABASE.items():
+        for keyword in qa_data["keywords"]:
+            if keyword not in keyword_stats:
+                keyword_stats[keyword] = {
+                    "count": 0,
+                    "questions": []
+                }
+            keyword_stats[keyword]["count"] += 1
+            if len(keyword_stats[keyword]["questions"]) < 3:
+                keyword_stats[keyword]["questions"].append(qa_data["question"])
+    
+    # 개수 순으로 정렬하여 반환
+    sorted_keywords = sorted(
+        keyword_stats.items(), 
+        key=lambda x: x[1]["count"], 
+        reverse=True
+    )
+    
+    return {
+        "total_keywords": len(keyword_stats),
+        "keywords": [
             {
-                "id": qa_id,
-                "question": qa_data["question"],
-                "keywords": qa_data["keywords"]
+                "keyword": keyword,
+                "count": stats["count"],
+                "sample_questions": stats["questions"]
             }
-            for qa_id, qa_data in QA_DATABASE.items()
+            for keyword, stats in sorted_keywords
         ]
     }
 
