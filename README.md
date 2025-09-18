@@ -105,10 +105,174 @@ python test_ollama.py
 ### GET /qa-list
 등록된 QA 목록을 반환합니다.
 
+## 🔐 Google OAuth 인증 API
+
+### GET /auth/google
+Google OAuth 로그인을 시작합니다. 사용자를 Google 로그인 페이지로 리다이렉트합니다.
+
+### GET /auth/google/callback
+Google OAuth 콜백을 처리하고 JWT 토큰을 발급합니다.
+
+**응답:**
+```json
+{
+  "success": true,
+  "message": "로그인에 성공했습니다!",
+  "token": {
+    "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...",
+    "token_type": "bearer",
+    "expires_in": 1800,
+    "user": {
+      "id": "user-uuid",
+      "email": "user@example.com",
+      "name": "사용자 이름",
+      "picture": "https://lh3.googleusercontent.com/...",
+      "created_at": "2024-01-15T10:30:00"
+    }
+  },
+  "user": {
+    "id": "user-uuid",
+    "email": "user@example.com",
+    "name": "사용자 이름",
+    "picture": "https://lh3.googleusercontent.com/...",
+    "created_at": "2024-01-15T10:30:00"
+  }
+}
+```
+
+### GET /auth/me
+현재 로그인한 사용자의 정보를 조회합니다. Authorization 헤더에 Bearer 토큰이 필요합니다.
+
+**헤더:**
+```
+Authorization: Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...
+```
+
+### POST /auth/logout
+사용자를 로그아웃 처리합니다. (클라이언트에서 토큰 삭제 필요)
+
+## 🌐 프론트엔드 연동 가이드
+
+### 1. Google 로그인 구현
+
+```javascript
+// Google 로그인 버튼 클릭 시
+function loginWithGoogle() {
+    window.location.href = 'http://localhost:8001/auth/google';
+}
+
+// 콜백 페이지에서 토큰 처리
+function handleGoogleCallback() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const token = urlParams.get('access_token');
+    
+    if (token) {
+        // 토큰을 localStorage에 저장
+        localStorage.setItem('access_token', token);
+        
+        // 사용자 정보 가져오기
+        fetchUserInfo(token);
+    }
+}
+
+// 사용자 정보 조회
+async function fetchUserInfo(token) {
+    try {
+        const response = await fetch('http://localhost:8001/auth/me', {
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+        
+        if (response.ok) {
+            const user = await response.json();
+            console.log('사용자 정보:', user);
+            // 사용자 정보를 UI에 표시
+        }
+    } catch (error) {
+        console.error('사용자 정보 조회 실패:', error);
+    }
+}
+```
+
+### 2. 인증이 필요한 API 호출
+
+```javascript
+// 토큰이 필요한 API 호출
+async function callProtectedAPI() {
+    const token = localStorage.getItem('access_token');
+    
+    if (!token) {
+        // 로그인 페이지로 리다이렉트
+        window.location.href = '/login';
+        return;
+    }
+    
+    try {
+        const response = await fetch('http://localhost:8001/chat', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({
+                prompt: '사용자 질문',
+                use_ollama: true
+            })
+        });
+        
+        if (response.ok) {
+            const data = await response.json();
+            console.log('챗봇 응답:', data);
+        } else if (response.status === 401) {
+            // 토큰 만료 - 로그인 페이지로 리다이렉트
+            localStorage.removeItem('access_token');
+            window.location.href = '/login';
+        }
+    } catch (error) {
+        console.error('API 호출 실패:', error);
+    }
+}
+```
+
+### 3. 로그아웃 구현
+
+```javascript
+function logout() {
+    // 토큰 삭제
+    localStorage.removeItem('access_token');
+    
+    // 로그아웃 API 호출 (선택사항)
+    fetch('http://localhost:8001/auth/logout', {
+        method: 'POST'
+    });
+    
+    // 로그인 페이지로 리다이렉트
+    window.location.href = '/login';
+}
+```
+
 ## 🔧 환경 변수
 
+### 기본 설정
 - `OLLAMA_BASE_URL`: Ollama 서버 URL (기본값: http://localhost:11434)
 - `PORT`: 서버 포트 (기본값: 8000)
+
+### Google OAuth 설정 (로그인 기능)
+- `GOOGLE_CLIENT_ID`: Google OAuth 클라이언트 ID
+- `GOOGLE_CLIENT_SECRET`: Google OAuth 클라이언트 시크릿
+- `SECRET_KEY`: JWT 토큰 서명용 시크릿 키
+
+### Google OAuth 설정 방법
+1. [Google Cloud Console](https://console.cloud.google.com/) 접속
+2. 새 프로젝트 생성 또는 기존 프로젝트 선택
+3. "API 및 서비스" > "사용자 인증 정보" 이동
+4. "사용자 인증 정보 만들기" > "OAuth 2.0 클라이언트 ID" 선택
+5. 애플리케이션 유형: "웹 애플리케이션"
+6. 승인된 리디렉션 URI 추가:
+   - 개발: `http://localhost:8001/auth/google/callback`
+   - 프로덕션: `https://yourdomain.com/auth/google/callback`
+7. 클라이언트 ID와 시크릿을 환경변수로 설정
 
 ## 🚀 배포
 

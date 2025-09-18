@@ -1,10 +1,11 @@
 
 import os
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.exceptions import RequestValidationError
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from typing import Optional, List
 import uvicorn
@@ -13,13 +14,99 @@ from difflib import SequenceMatcher
 import requests
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 import sqlite3
 import os
+# from authlib.integrations.fastapi_oauth2 import GoogleOAuth2  # 임시 비활성화
+from jose import JWTError, jwt
+from passlib.context import CryptContext
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# JWT 설정
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-here-change-in-production")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+# 비밀번호 해싱
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# Google OAuth 설정
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "your-google-client-id")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "your-google-client-secret")
+
+# google_oauth = GoogleOAuth2(  # 임시 비활성화
+#     client_id=GOOGLE_CLIENT_ID,
+#     client_secret=GOOGLE_CLIENT_SECRET,
+#     redirect_uri="http://localhost:8001/auth/google/callback"
+# )
+
+# JWT 토큰 생성 함수
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+# JWT 토큰 검증 함수
+def verify_token(token: str):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except JWTError:
+        return None
+
+# 사용자 관련 함수들
+def get_user_by_email(email: str):
+    """이메일로 사용자 조회"""
+    conn = sqlite3.connect('chat_history.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM users WHERE email = ?', (email,))
+    user = cursor.fetchone()
+    conn.close()
+    return user
+
+def create_user(user_data: dict):
+    """새 사용자 생성"""
+    conn = sqlite3.connect('chat_history.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO users (id, email, name, picture)
+        VALUES (?, ?, ?, ?)
+    ''', (user_data['id'], user_data['email'], user_data['name'], user_data.get('picture')))
+    conn.commit()
+    conn.close()
+
+def update_user_login(user_id: str):
+    """사용자 마지막 로그인 시간 업데이트"""
+    conn = sqlite3.connect('chat_history.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?
+    ''', (user_id,))
+    conn.commit()
+    conn.close()
+
+# JWT 토큰 의존성
+security = HTTPBearer()
+
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """현재 로그인한 사용자 정보 가져오기"""
+    token = credentials.credentials
+    payload = verify_token(token)
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="유효하지 않은 토큰입니다",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return payload
 
 # Ollama 설정
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
@@ -55,6 +142,18 @@ def init_database():
             model_used TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (session_id) REFERENCES sessions (id)
+        )
+    ''')
+    
+    # 사용자 테이블 생성
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            email TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            picture TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_login TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     
@@ -390,24 +489,37 @@ QA_DATABASE = {
 
 # FastAPI 앱 초기화
 app = FastAPI(
-    title="라이언 헬퍼 AI 챗봇 API",
+    title="라이언 헬퍼 AI 챗봇 & 검색 엔진 API",
     version="3.0.0",
     description="""
-## 🤖 라이언 헬퍼 AI 챗봇 - 훈련생을 위한 스마트 도우미 API
+## 🤖 라이언 헬퍼 - 훈련생을 위한 스마트 도우미 API
 
-### 📚 주요 기능
-- 🤖 **하이브리드 AI 챗봇**: 키워드 기반 + Ollama GPT 모델
-- 📝 **훈련 관련 정보**: 훈련장려금, 출결, 공결 관련 즉시 답변
+### 🚀 주요 모드
+- 🔍 **검색 엔진 모드**: 키워드 검색으로 관련 질문들을 모두 나열
+- 💬 **채팅 모드**: AI와의 대화형 상호작용
+
+### 📚 핵심 기능
+- 🔍 **스마트 검색**: 키워드 기반으로 관련 질문들을 점수순 정렬
+- 🤖 **하이브리드 AI**: 키워드 기반 + Ollama GPT 모델
+- 📝 **훈련 정보**: 훈련장려금, 출결, 공결 관련 즉시 답변
 - 🖥️ **교육 지원**: 줌, 노트북, 교재 관련 안내
 - 💼 **커리어 지원**: 취업, 인턴십, 포트폴리오 상담
-- 💬 **대화 기록 관리**: 세션별 대화 내용 저장 및 관리
+- 💬 **대화 기록**: 세션별 대화 내용 저장 및 관리
 
 ### 🔧 시스템 구조
-- **1단계**: 키워드 기반 빠른 응답 (47개 QA 데이터베이스)
+
+#### 🔍 검색 엔진 모드
+- **입력**: 검색 키워드 (예: "훈련장려금", "출결")
+- **처리**: 47개 QA 데이터베이스에서 관련도 점수 계산
+- **출력**: 관련 질문들을 점수순으로 정렬하여 반환
+- **장점**: 한 번에 모든 관련 정보 확인 가능
+
+#### 💬 채팅 모드  
+- **1단계**: 키워드 기반 빠른 응답
 - **2단계**: AI 모델 생성 응답 (Ollama GPT-OSS-20B)
 - **백업**: 연결 실패 시 기본 안내 응답
 
-### 🎯 지원 주제
+### 🎯 지원 주제 (47개 카테고리)
 - **💰 훈련장려금**: 계좌 변경, 금액, 지급시기, 수령 조건
 - **📋 출결관리**: QR코드, 지각, 조퇴, 외출, 공결 신청
 - **🖥️ 교육도구**: 줌 설정, 노트북 대여/반납, 교재 수령
@@ -415,17 +527,35 @@ app = FastAPI(
 - **💼 커리어**: 수료 후 취업, 조기취업, 인턴십, 특강
 
 ### 🔄 개발 환경
-- **🔗Base URL**: `http://localhost:8000`
+- **🔗Base URL**: `http://localhost:8001`
 - **📖API 문서**: `/docs` (Swagger UI)
 - **🔧대안 문서**: `/redoc` (ReDoc)
 
 ### 💡 사용 플로우
-1. `/chat` API로 질문 전송
-2. 시스템이 키워드 매칭 시도
-3. 매칭 실패 시 AI 모델 호출
-4. 응답과 함께 매칭된 키워드 정보 반환
 
-### 🔗 API 사용 예시
+#### 🔍 검색 엔진 모드
+```bash
+# 관련 질문 검색 (추천)
+GET /search?query=훈련장려금&limit=10&min_score=0.1
+
+# 응답 예시
+{
+  "query": "훈련장려금",
+  "total_found": 5,
+  "showing": 5,
+  "results": [
+    {
+      "id": "훈련장려금_금액",
+      "question": "훈련장려금은 얼마인가요?",
+      "answer_preview": "훈련장려금은 하루 수업을 모두 참여시 일일 15,800원이...",
+      "matched_keywords": ["훈련장려금", "얼마", "일일", "지급"],
+      "score": 5.56
+    }
+  ]
+}
+```
+
+#### 💬 채팅 모드
 ```bash
 # AI 챗봇과 대화
 POST /chat
@@ -433,16 +563,30 @@ POST /chat
   "prompt": "훈련장려금은 얼마인가요?",
   "use_ollama": true
 }
-
-# 서버 상태 확인
-GET /health
-
-# QA 목록 조회
-GET /qa-list
-
-# 키워드별 QA 조회
-GET /qa-list?keyword=훈련장려금
 ```
+
+### 🔗 API 엔드포인트
+
+#### 🔍 검색 관련
+- `GET /search` - 키워드로 관련 질문 검색
+- `GET /qa-list` - 전체 QA 목록 조회
+- `GET /qa-list?keyword=훈련장려금` - 키워드별 필터링
+
+#### 💬 채팅 관련  
+- `POST /chat` - AI 챗봇과 대화
+- `GET /health` - 서버 상태 확인
+- `GET /info` - 시스템 정보
+
+#### 📝 세션 관리
+- `POST /sessions` - 새 대화 세션 생성
+- `GET /sessions` - 세션 목록 조회
+- `GET /sessions/{id}/messages` - 세션 메시지 조회
+
+### 📊 검색 점수 계산 방식
+- **정확한 키워드 매칭**: 5점
+- **부분 키워드 매칭**: 2점
+- **질문 유사도**: 최대 1점  
+- **답변 유사도**: 최대 0.5점
 
 ### 📞 문의
 라이언 헬퍼 개발팀
@@ -492,6 +636,14 @@ GET /qa-list?keyword=훈련장려금
         {
             "name": "Sessions",
             "description": "💬 대화 기록 - 채팅 세션 및 메시지 관리"
+        },
+        {
+            "name": "Auth",
+            "description": "🔐 인증 관리 - Google OAuth 로그인 및 사용자 인증"
+        },
+        {
+            "name": "Search",
+            "description": "🔍 검색 엔진 - 관련 질문들을 점수순으로 검색하고 반환"
         }
     ]
 )
@@ -621,6 +773,28 @@ class ChatResponse(BaseModel):
                 "response_type": "keyword"
             }
         }
+
+class User(BaseModel):
+    """사용자 정보 모델"""
+    id: str = Field(..., description="사용자 고유 ID")
+    email: str = Field(..., description="이메일 주소")
+    name: str = Field(..., description="사용자 이름")
+    picture: Optional[str] = Field(None, description="프로필 사진 URL")
+    created_at: str = Field(..., description="계정 생성일")
+
+class Token(BaseModel):
+    """토큰 응답 모델"""
+    access_token: str = Field(..., description="JWT 액세스 토큰")
+    token_type: str = Field(..., description="토큰 타입", example="bearer")
+    expires_in: int = Field(..., description="토큰 만료 시간(초)", example=1800)
+    user: User = Field(..., description="사용자 정보")
+
+class LoginResponse(BaseModel):
+    """로그인 응답 모델"""
+    success: bool = Field(..., description="로그인 성공 여부")
+    message: str = Field(..., description="응답 메시지")
+    token: Optional[Token] = Field(None, description="토큰 정보 (성공 시)")
+    user: Optional[User] = Field(None, description="사용자 정보 (성공 시)")
 
 class SessionCreate(BaseModel):
     """새 세션 생성 요청 모델"""
@@ -902,6 +1076,9 @@ async def call_ollama(prompt: str, max_tokens: int = 512, temperature: float = 0
     logger.error(f"시도한 URL들: {urls_to_try}")
     return "죄송합니다. AI 모델에 연결할 수 없습니다. 키워드 기반 응답만 사용 가능합니다."
 
+# === Google OAuth 인증 API (임시 비활성화) ===
+# OAuth 관련 기능은 authlib 버전 문제로 임시 비활성화
+
 @app.get(
     "/",
     summary="🏠 메인 페이지",
@@ -1135,6 +1312,135 @@ def get_info():
         ],
         "qa_topics": list(QA_DATABASE.keys()),
         "ollama_model": OLLAMA_MODEL
+    }
+
+@app.get(
+    "/search",
+    summary="🔍 검색 엔진 - 관련 질문 검색",
+    description="검색어를 입력하면 관련된 모든 질문들을 관련도 점수순으로 반환합니다. 검색 엔진처럼 작동합니다.",
+    response_description="관련 질문들과 점수 정보",
+    tags=["Search"]
+)
+def search_questions(
+    query: str,
+    limit: Optional[int] = 10,
+    min_score: Optional[float] = 0.1
+):
+    """
+    ## 🔍 검색 엔진 - 관련 질문 검색
+    
+    사용자가 입력한 검색어와 관련된 모든 질문들을 관련도 점수순으로 반환합니다.
+    기존 챗봇과 달리 단일 답변이 아닌 관련 질문들을 모두 나열하여 사용자가 선택할 수 있게 합니다.
+    
+    ### 🔍 쿼리 매개변수
+    - **query**: 검색할 질문이나 키워드 (필수)
+      - 예: "훈련장려금", "출결 관련", "줌 설정 방법"
+    - **limit**: 최대 결과 개수 (기본값: 10)
+    - **min_score**: 최소 관련도 점수 (기본값: 0.1)
+    
+    ### 📋 응답 정보
+    - **query**: 검색한 질문/키워드
+    - **total_found**: 조건을 만족하는 총 결과 개수
+    - **results**: 검색 결과 배열 (관련도 점수순 정렬)
+      - **id**: QA 고유 식별자
+      - **question**: 질문 내용
+      - **answer**: 답변 내용 (미리보기)
+      - **keywords**: 매칭된 키워드 목록
+      - **score**: 관련도 점수 (0.0-10.0)
+      - **match_type**: 매칭 유형 (exact/partial/similarity)
+    
+    ### 🎯 활용 방법
+    - **검색 엔진 형태**: 사용자가 검색하면 관련 질문들을 모두 표시
+    - **FAQ 탐색**: 비슷한 질문들을 한 번에 확인
+    - **키워드 기반 탐색**: 특정 주제의 모든 관련 정보 탐색
+    
+    ### 📊 점수 계산 방식
+    - **정확한 키워드 매칭**: 5점
+    - **부분 키워드 매칭**: 2점  
+    - **질문 유사도**: 최대 1점
+    - **답변 유사도**: 최대 0.5점
+    """
+    
+    if not query or not query.strip():
+        raise HTTPException(status_code=400, detail="검색어를 입력해주세요.")
+    
+    search_results = []
+    query_lower = query.lower().strip()
+    
+    # 모든 QA에 대해 관련도 점수 계산
+    for qa_id, qa_data in QA_DATABASE.items():
+        score = 0
+        matched_keywords = []
+        match_types = []
+        
+        # 1. 정확한 키워드 매칭 (높은 가중치)
+        for keyword in qa_data["keywords"]:
+            keyword_lower = keyword.lower()
+            if keyword_lower in query_lower:
+                score += 5  # 정확한 매칭은 높은 점수
+                matched_keywords.append(keyword)
+                if "exact" not in match_types:
+                    match_types.append("exact")
+        
+        # 2. 부분 키워드 매칭 (중간 가중치)
+        for keyword in qa_data["keywords"]:
+            keyword_lower = keyword.lower()
+            if len(keyword_lower) >= 2:  # 2글자 이상 키워드만
+                # 검색어의 각 단어와 비교
+                query_words = query_lower.replace('?', '').replace('!', '').replace('.', '').split()
+                for word in query_words:
+                    if len(word) >= 2:
+                        # 키워드가 단어에 포함되거나, 단어가 키워드에 포함되는 경우
+                        if (keyword_lower in word or word in keyword_lower) and keyword not in matched_keywords:
+                            score += 2  # 부분 매칭은 중간 점수
+                            matched_keywords.append(keyword)
+                            if "partial" not in match_types:
+                                match_types.append("partial")
+        
+        # 3. 질문 유사도 (낮은 가중치)
+        question_similarity = SequenceMatcher(None, query_lower, qa_data["question"].lower()).ratio()
+        if question_similarity > 0.3:  # 30% 이상 유사할 때만
+            score += question_similarity * 1  # 낮은 가중치
+            if "similarity" not in match_types:
+                match_types.append("similarity")
+        
+        # 4. 답변 내용 유사도 (매우 낮은 가중치)
+        answer_similarity = SequenceMatcher(None, query_lower, qa_data["answer"].lower()).ratio()
+        if answer_similarity > 0.4:  # 40% 이상 유사할 때만
+            score += answer_similarity * 0.5  # 매우 낮은 가중치
+            if "similarity" not in match_types:
+                match_types.append("similarity")
+        
+        # 최소 점수 이상인 경우만 결과에 포함
+        if score >= min_score:
+            # 답변 미리보기 (100자 제한)
+            answer_preview = qa_data["answer"]
+            if len(answer_preview) > 100:
+                answer_preview = answer_preview[:100] + "..."
+            
+            search_results.append({
+                "id": qa_id,
+                "question": qa_data["question"],
+                "answer": qa_data["answer"],
+                "answer_preview": answer_preview,
+                "keywords": qa_data["keywords"],
+                "matched_keywords": matched_keywords,
+                "score": round(score, 2),
+                "match_type": "/".join(match_types) if match_types else "none"
+            })
+    
+    # 점수순으로 정렬 (높은 점수부터)
+    search_results.sort(key=lambda x: x["score"], reverse=True)
+    
+    # 결과 개수 제한
+    limited_results = search_results[:limit]
+    
+    return {
+        "query": query,
+        "total_found": len(search_results),
+        "showing": len(limited_results),
+        "min_score": min_score,
+        "results": limited_results
     }
 
 @app.get(
