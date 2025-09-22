@@ -1292,21 +1292,21 @@ def analyze_question_intent(user_input: str) -> dict:
         detected_topic = "일반대화"
         confidence = 0.0  # 키워드 매칭 점수를 낮춤
     else:
-    # 의도 분석
-    for intent, keywords in intent_patterns.items():
-        matches = sum(1 for keyword in keywords if keyword in input_lower)
-        if matches > 0:
-            detected_intent = intent
-            confidence += matches * 0.2
-            break
-    
-    # 주제 분석
-    for topic, keywords in topic_categories.items():
-        matches = sum(1 for keyword in keywords if keyword in input_lower)
-        if matches > 0:
-            detected_topic = topic
-            confidence += matches * 0.3
-            break
+        # 의도 분석
+        for intent, keywords in intent_patterns.items():
+            matches = sum(1 for keyword in keywords if keyword in input_lower)
+            if matches > 0:
+                detected_intent = intent
+                confidence += matches * 0.2
+                break
+        
+        # 주제 분석
+        for topic, keywords in topic_categories.items():
+            matches = sum(1 for keyword in keywords if keyword in input_lower)
+            if matches > 0:
+                detected_topic = topic
+                confidence += matches * 0.3
+                break
     
     return {
         "intent": detected_intent,
