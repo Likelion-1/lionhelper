@@ -1679,7 +1679,7 @@ async def call_gpt4o_mini(prompt: str, max_tokens: int = 512, temperature: float
             logger.warning("GPT-4o-mini API 빈 응답")
             return "죄송합니다. GPT-4o-mini에서 적절한 응답을 받지 못했습니다."
             
-        except Exception as e:
+    except Exception as e:
         logger.error(f"GPT-4o-mini API 호출 실패: {str(e)}")
         return f"죄송합니다. GPT-4o-mini API 연결에 문제가 발생했습니다: {str(e)}"
     
@@ -2185,7 +2185,7 @@ def health_check():
             # 간단한 연결 테스트
             test_result = claude_client.test_connection()
             claude_status = "connected" if test_result else "error"
-    except:
+        except:
             claude_status = "error"
     
     # GPT-4o-mini 상태 확인
