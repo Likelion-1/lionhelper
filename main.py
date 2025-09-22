@@ -1039,25 +1039,63 @@ async def options_handler(request: Request, full_path: str):
 
 # Pydantic 모델
 class ChatRequest(BaseModel):
-    """AI 챗봇 대화 요청 모델"""
-    prompt: str = Field(..., description="사용자 질문 또는 메시지", example="훈련장려금은 얼마인가요?")
-    max_new_tokens: Optional[int] = Field(512, description="최대 생성 토큰 수", example=512, ge=1, le=2048)
-    temperature: Optional[float] = Field(0.6, description="창의성 조절 (0.0-2.0)", example=0.6, ge=0.0, le=2.0)
+    """
+    ## 🤖 멀티 AI 챗봇 요청 모델
+    
+    Claude-3-Haiku + GPT-4o-mini + 키워드 DB 하이브리드 시스템
+    """
+    prompt: str = Field(..., description="사용자 질문 또는 메시지", example="안녕? 코딩 질문 가능해?")
+    max_new_tokens: Optional[int] = Field(1000, description="AI 응답 최대 토큰 수 (Claude: ~1000, GPT: ~512)", example=1000, ge=50, le=2048)
+    temperature: Optional[float] = Field(0.7, description="창의성 조절 (Claude: 0.7, GPT: 0.6)", example=0.7, ge=0.0, le=2.0)
     top_p: Optional[float] = Field(0.9, description="확률 임계값 (0.0-1.0)", example=0.9, ge=0.0, le=1.0)
-    use_claude: Optional[bool] = Field(True, description="Claude 모델 사용 여부", example=True)
-    use_gpt4o: Optional[bool] = Field(False, description="GPT-4o-mini 모델 사용 여부", example=False)
-    session_id: Optional[str] = Field(None, description="대화 세션 ID (맥락 이해용)", example="123e4567-e89b-12d3-a456-426614174000")
+    use_claude: Optional[bool] = Field(True, description="🟢 Claude-3-Haiku 사용 (기본값: true)", example=True)
+    use_gpt4o: Optional[bool] = Field(False, description="🔵 GPT-4o-mini 사용 (백업 또는 직접 지정)", example=False)
+    session_id: Optional[str] = Field(None, description="대화 세션 ID (대화 맥락 유지용)", example="123e4567-e89b-12d3-a456-426614174000")
 
     class Config:
         schema_extra = {
-            "example": {
+            "examples": {
+                "claude_general": {
+                    "summary": "🟢 Claude로 일반 대화",
+                    "description": "Claude-3-Haiku로 자유로운 대화 (기본 설정)",
+                    "value": {
+                        "prompt": "안녕? 파이썬 코딩 질문해도 돼?",
+                        "use_claude": True,
+                        "use_gpt4o": False,
+                        "session_id": "general-chat-001"
+                    }
+                },
+                "gpt_specific": {
+                    "summary": "🔵 GPT-4o-mini 직접 사용",
+                    "description": "GPT-4o-mini를 직접 지정해서 사용",
+                    "value": {
+                        "prompt": "창의적인 아이디어가 필요해",
+                        "use_claude": False,
+                        "use_gpt4o": True,
+                        "temperature": 0.8,
+                        "session_id": "creative-chat-001"
+                    }
+                },
+                "keyword_training": {
+                    "summary": "📚 전문 정보 질문",
+                    "description": "훈련장려금, 출결 등 전문 DB 정보",
+                    "value": {
                 "prompt": "훈련장려금은 언제 받을 수 있나요?",
-                "max_new_tokens": 512,
-                "temperature": 0.6,
-                "top_p": 0.9,
-                "use_claude": True,
-                "use_gpt4o": False,
-                "session_id": "123e4567-e89b-12d3-a456-426614174000"
+                        "use_claude": False,
+                        "use_gpt4o": False,
+                        "session_id": "training-info-001"
+                    }
+                },
+                "hybrid_auto": {
+                    "summary": "🚀 하이브리드 자동 선택",
+                    "description": "시스템이 자동으로 최적 AI 모델 선택",
+                    "value": {
+                        "prompt": "안녕하세요! 출결 관리는 어떻게 하나요?",
+                        "use_claude": True,
+                        "use_gpt4o": True,
+                        "session_id": "hybrid-chat-001"
+                    }
+                }
             }
         }
 
@@ -1070,33 +1108,69 @@ class RelatedQuestion(BaseModel):
     matched_keywords: List[str] = Field(..., description="매칭된 키워드")
 
 class ChatResponse(BaseModel):
-    """AI 챗봇 응답 모델"""
-    response: str = Field(..., description="AI의 응답 메시지", example="훈련장려금은 해당 과정의 단위기간 마감일을 기준으로 지급까지 2주에서 3주 가량 소요됩니다")
-    model: str = Field(..., description="사용된 모델명", example="Keyword-based Fast Response System")
-    status: str = Field(..., description="응답 상태", example="success")
-    matched_keywords: Optional[List[str]] = Field(None, description="매칭된 키워드 목록", example=["훈련장려금", "언제", "받기"])
-    response_type: str = Field(..., description="응답 유형 (keyword/ollama/fallback)", example="keyword")
-    related_questions: Optional[List[RelatedQuestion]] = Field(None, description="관련 질문 목록")
+    """
+    ## 🤖 멀티 AI 챗봇 응답 모델
+    
+    Claude-3-Haiku + GPT-4o-mini + 키워드 DB 하이브리드 응답
+    """
+    response: str = Field(..., description="AI 생성 응답 또는 키워드 매칭 답변", example="안녕하세요! 무엇을 도와드릴까요?")
+    model: str = Field(..., description="사용된 모델명 (Claude-3-Haiku/GPT-4o-mini/Keyword Database)", example="Claude-3-Haiku")
+    status: str = Field(..., description="응답 상태 (success/error/fallback/greeting)", example="success")
+    matched_keywords: Optional[List[str]] = Field(None, description="매칭된 키워드 (키워드 DB 사용시)", example=["훈련장려금", "언제"])
+    response_type: str = Field(..., description="응답 유형 (claude_chat/gpt4o_chat/smart_keyword/general_greeting)", example="claude_chat")
+    related_questions: Optional[List[RelatedQuestion]] = Field(None, description="관련 질문 목록 (키워드 DB)")
     total_related: Optional[int] = Field(None, description="관련 질문 총 개수")
 
     class Config:
         schema_extra = {
-            "example": {
-                "response": "훈련장려금은 해당 과정의 단위기간 마감일을 기준으로 지급까지 2주에서 3주 가량 소요됩니다\n1단위기간의 경우, 확인할 사항이 많아 시간이 다소 소요될 수 있다는 점 참고 부탁드립니다.",
-                "model": "Keyword-based Fast Response System",
+            "examples": {
+                "claude_response": {
+                    "summary": "🟢 Claude-3-Haiku 응답",
+                    "description": "일반 대화나 코딩 질문에 대한 Claude 응답",
+                    "value": {
+                        "response": "안녕하세요! 네, 파이썬 코딩 질문 환영합니다. 어떤 부분이 궁금하신가요?",
+                        "model": "Claude-3-Haiku",
                 "status": "success",
-                "matched_keywords": ["훈련장려금", "언제", "받기", "단위기간", "2주"],
-                "response_type": "keyword",
-                "related_questions": [
-                    {
-                        "id": "훈련장려금_금액",
-                        "question": "훈련장려금은 얼마인가요?",
-                        "answer_preview": "훈련장려금은 하루 수업을 모두 참여시 일일 15,800원이...",
-                        "score": 4.2,
-                        "matched_keywords": ["훈련장려금", "얼마"]
+                        "matched_keywords": None,
+                        "response_type": "claude_chat",
+                        "related_questions": None,
+                        "total_related": None
                     }
-                ],
-                "total_related": 3
+                },
+                "gpt_response": {
+                    "summary": "🔵 GPT-4o-mini 응답",
+                    "description": "GPT-4o-mini 직접 사용 또는 백업 응답",
+                    "value": {
+                        "response": "창의적인 아이디어를 위한 브레인스토밍을 도와드리겠습니다!",
+                        "model": "GPT-4o-mini",
+                        "status": "success",
+                        "matched_keywords": None,
+                        "response_type": "gpt4o_chat",
+                        "related_questions": None,
+                        "total_related": None
+                    }
+                },
+                "keyword_response": {
+                    "summary": "📚 키워드 DB 응답",
+                    "description": "훈련장려금, 출결 등 전문 정보 응답",
+                    "value": {
+                        "response": "훈련장려금은 해당 과정의 단위기간 마감일을 기준으로 지급까지 2주에서 3주 가량 소요됩니다.",
+                        "model": "Keyword Database",
+                        "status": "success",
+                        "matched_keywords": ["훈련장려금", "언제", "받기"],
+                        "response_type": "smart_keyword",
+                "related_questions": [
+                            {
+                                "id": "1",
+                                "question": "훈련장려금 금액은 얼마인가요?",
+                                "answer_preview": "하루 수업을 모두 참여시 일일 15,800원...",
+                                "score": 0.9,
+                                "matched_keywords": ["훈련장려금", "금액"]
+                            }
+                        ],
+                        "total_related": 5
+                    }
+                }
             }
         }
 
@@ -1218,21 +1292,21 @@ def analyze_question_intent(user_input: str) -> dict:
         detected_topic = "일반대화"
         confidence = 0.0  # 키워드 매칭 점수를 낮춤
     else:
-        # 의도 분석
-        for intent, keywords in intent_patterns.items():
-            matches = sum(1 for keyword in keywords if keyword in input_lower)
-            if matches > 0:
-                detected_intent = intent
-                confidence += matches * 0.2
-                break
-        
-        # 주제 분석
-        for topic, keywords in topic_categories.items():
-            matches = sum(1 for keyword in keywords if keyword in input_lower)
-            if matches > 0:
-                detected_topic = topic
-                confidence += matches * 0.3
-                break
+    # 의도 분석
+    for intent, keywords in intent_patterns.items():
+        matches = sum(1 for keyword in keywords if keyword in input_lower)
+        if matches > 0:
+            detected_intent = intent
+            confidence += matches * 0.2
+            break
+    
+    # 주제 분석
+    for topic, keywords in topic_categories.items():
+        matches = sum(1 for keyword in keywords if keyword in input_lower)
+        if matches > 0:
+            detected_topic = topic
+            confidence += matches * 0.3
+            break
     
     return {
         "intent": detected_intent,
@@ -1605,7 +1679,7 @@ async def call_gpt4o_mini(prompt: str, max_tokens: int = 512, temperature: float
             logger.warning("GPT-4o-mini API 빈 응답")
             return "죄송합니다. GPT-4o-mini에서 적절한 응답을 받지 못했습니다."
             
-    except Exception as e:
+        except Exception as e:
         logger.error(f"GPT-4o-mini API 호출 실패: {str(e)}")
         return f"죄송합니다. GPT-4o-mini API 연결에 문제가 발생했습니다: {str(e)}"
     
@@ -1651,9 +1725,27 @@ async def root():
 @app.post(
     "/chat",
     response_model=ChatResponse,
-    summary="🤖 AI 챗봇 대화",
-    description="하이브리드 시스템을 사용하여 AI와 대화를 수행합니다. 키워드 기반 빠른 응답과 Ollama AI 모델을 활용합니다.",
-    response_description="AI 챗봇의 응답과 메타데이터",
+    summary="🤖 멀티 AI 챗봇 대화",
+    description="""
+    ## 🚀 하이브리드 AI 시스템
+    
+    **Claude-3-Haiku** + **GPT-4o-mini** + **키워드 DB**를 활용한 지능형 챗봇
+    
+    ### 🎯 **AI 모델 우선순위**
+    1. **Claude-3-Haiku** (기본) - 일반 대화, 코딩 질문 등
+    2. **GPT-4o-mini** (백업) - Claude 실패 시 또는 직접 지정
+    3. **키워드 DB** (전문) - 훈련장려금, 출결 등 전문 정보
+    
+    ### 💡 **사용법**
+    - `use_claude: true` (기본값) → Claude 우선 사용
+    - `use_gpt4o: true` → GPT-4o-mini 직접 사용  
+    - 둘 다 false → 키워드 DB만 사용
+    
+    ### 📝 **질문 예시**
+    - 일반 대화: "안녕?", "코딩 질문 가능해?"
+    - 전문 정보: "훈련장려금은 얼마인가요?"
+    """,
+    response_description="AI 모델별 응답 및 메타데이터 (Claude/GPT/키워드)",
     tags=["Chat"]
 )
 async def chat_with_hybrid(request: ChatRequest):
@@ -2093,7 +2185,7 @@ def health_check():
             # 간단한 연결 테스트
             test_result = claude_client.test_connection()
             claude_status = "connected" if test_result else "error"
-        except:
+    except:
             claude_status = "error"
     
     # GPT-4o-mini 상태 확인
