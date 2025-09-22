@@ -1,23 +1,29 @@
 
 import os
+import time
+import json
+import uuid
+import logging
+import sqlite3
+import requests
+import uvicorn
+from datetime import datetime, timedelta
+from difflib import SequenceMatcher
+from typing import Optional, List
+
+import httpx
+from openai import OpenAI
+from anthropic import Anthropic
+from tenacity import retry, stop_after_attempt, wait_exponential
+
 from fastapi import FastAPI, HTTPException, Request, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
-from typing import Optional, List
-import uvicorn
-import logging
-from difflib import SequenceMatcher
-import requests
-import json
-import uuid
-from datetime import datetime, timedelta
-import sqlite3
-import os
-# from authlib.integrations.fastapi_oauth2 import GoogleOAuth2  # 임시 비활성화
+
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 
@@ -25,10 +31,6 @@ from passlib.context import CryptContext
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# JWT 설정
-SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-here-change-in-production")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 # 비밀번호 해싱
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -108,12 +110,309 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
         )
     return payload
 
-# Ollama 설정
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gpt-oss:20b")  # 환경변수로 설정 가능
+# OpenAI GPT-4o-mini 설정
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+USE_GPT4O_MINI = os.getenv("USE_GPT4O_MINI", "false").lower() == "true"
 
-# 외부 Ollama 서비스 URL (필요시 사용)
-EXTERNAL_OLLAMA_URL = os.getenv("EXTERNAL_OLLAMA_URL", "")
+# Anthropic Claude API 설정
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+USE_CLAUDE = os.getenv("USE_CLAUDE", "true").lower() == "true"
+
+class GPTAPIClient:
+    def __init__(self, api_key):
+        """GPT API 클라이언트 초기화"""
+        if not api_key:
+            raise ValueError("API 키가 제공되지 않았습니다.")
+            
+        self.logger = logging.getLogger(__name__)
+        self.model = "gpt-4o-mini"
+        
+        # httpx 클라이언트 설정
+        http_client = httpx.Client()
+        
+        # OpenAI 클라이언트 초기화
+        self.client = OpenAI(
+            api_key=api_key,
+            http_client=http_client
+        )
+        
+        self.logger.info(f"GPTAPIClient 초기화 완료 (모델: {self.model})")
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        reraise=True
+    )
+    def make_request(self, prompt: str, max_tokens: int = 2000) -> Optional[str]:
+        """GPT API 요청 수행"""
+        self.logger.info(f"API 요청 시작 (프롬프트 길이: {len(prompt)} 문자)")
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=max_tokens
+            )
+            
+            if response and response.choices:
+                result = response.choices[0].message.content
+                self.logger.info("API 요청 성공")
+                return result
+            else:
+                self.logger.error("API 응답이 비어있음")
+                raise Exception("API 응답이 비어있습니다")
+                
+        except Exception as e:
+            self.logger.error(f"API 요청 실패: {str(e)}")
+            raise
+
+    def split_text(self, text: str, max_chunk_size: int = 2000) -> List[str]:
+        """텍스트를 청크로 분할"""
+        if not text:
+            logger.warning("분할할 텍스트가 비어있음")
+            return []
+            
+        logger.info(f"텍스트 분할 시작 (전체 길이: {len(text)} 문자)")
+        chunks = []
+        sentences = text.replace('\r', '').split('\n')
+        
+        current_chunk = []
+        current_size = 0
+        
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+                
+            sentence_size = len(sentence)
+            if current_size + sentence_size > max_chunk_size:
+                if current_chunk:
+                    chunk_text = '\n'.join(current_chunk)
+                    chunks.append(chunk_text)
+                    logger.debug(f"청크 생성: {len(chunk_text)} 문자")
+                current_chunk = [sentence]
+                current_size = sentence_size
+            else:
+                current_chunk.append(sentence)
+                current_size += sentence_size
+                
+        if current_chunk:
+            chunk_text = '\n'.join(current_chunk)
+            chunks.append(chunk_text)
+            logger.debug(f"마지막 청크 생성: {len(chunk_text)} 문자")
+            
+        logger.info(f"텍스트 분할 완료 (총 {len(chunks)}개 청크)")
+        return chunks
+
+    def analyze_text(self, text: str, analysis_type: str = 'vtt') -> str:
+        """텍스트 분석을 수행"""
+        try:
+            # 텍스트를 청크로 분할
+            logger.info(f"텍스트 분석 시작 (유형: {analysis_type})")
+            chunks = self.split_text(text)
+            
+            # 각 청크별로 분석 수행
+            results = []
+            for i, chunk in enumerate(chunks, 1):
+                logger.info(f"청크 {i}/{len(chunks)} 분석 중")
+                
+                # 분석 유형에 따른 프롬프트 설정
+                if analysis_type == 'vtt':
+                    prompt = f"""
+다음은 강의 내용을 텍스트로 변환한 것입니다. 강의 내용을 분석하여 다음 형식으로 응답해주세요:
+
+[강의 내용]
+{chunk}
+
+다음 형식으로 응답해주세요:
+# 주요 내용
+(이 부분의 주요 내용을 2-3문장으로 요약)
+
+# 키워드
+(주요 키워드를 쉼표로 구분하여 나열)
+
+# 분석
+(강의 내용에 대한 전반적인 분석을 3-4문장으로 작성)
+
+# 위험 발언
+(차별적 발언, 부적절한 표현, 민감한 주제 등이 있다면 구체적으로 명시. 없다면 "위험 발언이 없습니다." 라고 표시)
+"""
+                elif analysis_type == 'chat':
+                    prompt = f"""다음 채팅 내용을 분석하여 아래 형식으로 응답해주세요.
+
+# 주요 대화 주제
+- 채팅에서 다뤄진 주요 주제와 내용을 요약하여 나열
+
+# 수강생 감정/태도 분석
+1. 긍정적 반응
+- 수업 내용에 대한 이해와 만족을 표현한 내용
+- 적극적인 참여와 긍정적인 피드백
+
+2. 부정적 반응
+- 수업 내용이나 진행에 대한 불만이나 어려움 표현
+- 부정적인 감정이나 태도가 드러난 내용
+
+3. 질문/요청사항
+- 수업 내용에 대한 질문
+- 수업 진행 방식에 대한 요청사항
+
+# 어려움/불만 상세 분석
+1. 학습적 어려움
+- 수업 내용의 난이도나 이해 문제
+- 학습 진도나 과제 관련 어려움
+
+2. 수업 진행 관련 문제
+- 수업 속도나 시간 배분 문제
+- 강의 방식이나 상호작용 관련 문제
+
+3. 기술적 문제
+- 온라인 플랫폼 사용의 어려움
+- 음질, 화질 등 기술적 문제
+
+# 개선 제안
+1. 학습 내용 개선
+- 수업 내용의 난이도 조정 제안
+- 추가 학습 자료나 예제 요청
+
+2. 수업 방식 개선
+- 수업 진행 방식 개선 제안
+- 상호작용 방식 개선 제안
+
+3. 기술적 지원 강화
+- 온라인 플랫폼 개선 제안
+- 기술적 문제 해결을 위한 제안
+
+# 위험 발언 및 주의사항
+- 부적절한 언어 사용이나 태도
+- 수업 분위기를 해치는 발언
+- 개인정보 노출 위험
+
+# 종합 제언
+- 전반적인 개선점과 권장사항
+- 향후 수업 운영을 위한 제안사항
+
+채팅 내용:
+{chunk}"""
+                else:
+                    prompt = f"""
+다음 텍스트를 분석하여 주요 내용을 요약해주세요:
+
+[텍스트 내용]
+{chunk}
+
+다음 형식으로 응답해주세요:
+# 요약
+(주요 내용을 3-4문장으로 요약)
+"""
+                
+                try:
+                    result = self.make_request(prompt)
+                    if result:
+                        results.append(result)
+                    else:
+                        results.append(f"[청크 {i} 분석 실패]")
+                except Exception as e:
+                    logger.error(f"청크 {i} 분석 중 오류 발생: {str(e)}")
+                    results.append(f"[청크 {i} 분석 오류: {str(e)}]")
+                
+                # 마지막 청크가 아닌 경우 API 호출 간격 유지
+                if i < len(chunks):
+                    time.sleep(2)
+            
+            final_result = "\n\n---\n\n".join(results)
+            logger.info("텍스트 분석 완료")
+            return final_result
+            
+        except Exception as e:
+            logger.error(f"분석 중 예상치 못한 오류 발생: {str(e)}")
+            return f"분석 중 오류 발생: {str(e)}"
+
+    def test_connection(self) -> bool:
+        """API 연결 테스트"""
+        try:
+            logger.info("API 연결 테스트 시작")
+            result = self.make_request("안녕하세요", max_tokens=10)
+            return bool(result)
+        except Exception as e:
+            logger.error(f"API 연결 테스트 실패: {str(e)}")
+            return False
+
+
+class ClaudeAPIClient:
+    def __init__(self, api_key):
+        """Claude API 클라이언트 초기화"""
+        if not api_key:
+            raise ValueError("Anthropic API 키가 제공되지 않았습니다.")
+        
+        self.logger = logging.getLogger(__name__)
+        self.model = "claude-3-haiku-20240307"  # 가장 빠르고 저렴한 모델
+        
+        # Anthropic 클라이언트 초기화
+        self.client = Anthropic(api_key=api_key)
+        
+        self.logger.info(f"ClaudeAPIClient 초기화 완료 (모델: {self.model})")
+    
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        reraise=True
+    )
+    def make_request(self, prompt: str, max_tokens: int = 1000) -> Optional[str]:
+        """Claude API 요청 수행"""
+        self.logger.info(f"Claude API 요청 시작 (프롬프트 길이: {len(prompt)} 문자)")
+        
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                temperature=0.7,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            
+            if response and response.content and len(response.content) > 0:
+                result = response.content[0].text
+                self.logger.info("Claude API 요청 성공")
+                return result
+            else:
+                self.logger.error("Claude API 응답이 비어있음")
+                raise Exception("Claude API 응답이 비어있습니다")
+                
+        except Exception as e:
+            self.logger.error(f"Claude API 요청 실패: {str(e)}")
+            raise
+    
+    def test_connection(self) -> bool:
+        """Claude API 연결 테스트"""
+        try:
+            self.logger.info("Claude API 연결 테스트 시작")
+            result = self.make_request("안녕하세요", max_tokens=10)
+            return bool(result)
+        except Exception as e:
+            self.logger.error(f"Claude API 연결 테스트 실패: {str(e)}")
+            return False
+
+# Claude 클라이언트 초기화 (API 키가 있는 경우에만)
+claude_client = None
+if ANTHROPIC_API_KEY:
+    try:
+        claude_client = ClaudeAPIClient(ANTHROPIC_API_KEY)
+        logger.info("Claude 클라이언트 초기화 완료")
+    except Exception as e:
+        logger.warning(f"Claude 클라이언트 초기화 실패: {str(e)}")
+
+# GPT-4o-mini 클라이언트 초기화 (API 키가 있는 경우에만)
+gpt_client = None
+if OPENAI_API_KEY:
+    try:
+        gpt_client = GPTAPIClient(OPENAI_API_KEY)
+        logger.info("GPT-4o-mini 클라이언트 초기화 완료")
+    except Exception as e:
+        logger.warning(f"GPT-4o-mini 클라이언트 초기화 실패: {str(e)}")
 
 # 데이터베이스 초기화
 def init_database():
@@ -718,8 +1017,11 @@ try:
 except:
     pass
 
-print("하이브리드 AI 챗봇 시스템이 로드되었습니다.")
-print(f"Ollama 모델: {OLLAMA_MODEL}")
+print("GPT-4o-mini + 키워드 기반 하이브리드 AI 챗봇 시스템이 로드되었습니다.")
+if gpt_client:
+    print("GPT-4o-mini: 활성화됨")
+else:
+    print("GPT-4o-mini: 비활성화됨 (API 키 확인 필요)")
 
 # CORS preflight 요청을 위한 OPTIONS 핸들러
 @app.options("/{full_path:path}")
@@ -742,7 +1044,9 @@ class ChatRequest(BaseModel):
     max_new_tokens: Optional[int] = Field(512, description="최대 생성 토큰 수", example=512, ge=1, le=2048)
     temperature: Optional[float] = Field(0.6, description="창의성 조절 (0.0-2.0)", example=0.6, ge=0.0, le=2.0)
     top_p: Optional[float] = Field(0.9, description="확률 임계값 (0.0-1.0)", example=0.9, ge=0.0, le=1.0)
-    use_ollama: Optional[bool] = Field(True, description="Ollama AI 모델 사용 여부", example=True)
+    use_claude: Optional[bool] = Field(True, description="Claude 모델 사용 여부", example=True)
+    use_gpt4o: Optional[bool] = Field(False, description="GPT-4o-mini 모델 사용 여부", example=False)
+    session_id: Optional[str] = Field(None, description="대화 세션 ID (맥락 이해용)", example="123e4567-e89b-12d3-a456-426614174000")
 
     class Config:
         schema_extra = {
@@ -751,9 +1055,19 @@ class ChatRequest(BaseModel):
                 "max_new_tokens": 512,
                 "temperature": 0.6,
                 "top_p": 0.9,
-                "use_ollama": True
+                "use_claude": True,
+                "use_gpt4o": False,
+                "session_id": "123e4567-e89b-12d3-a456-426614174000"
             }
         }
+
+class RelatedQuestion(BaseModel):
+    """관련 질문 모델"""
+    id: str = Field(..., description="질문 고유 ID")
+    question: str = Field(..., description="관련 질문")
+    answer_preview: str = Field(..., description="답변 미리보기")
+    score: float = Field(..., description="관련도 점수")
+    matched_keywords: List[str] = Field(..., description="매칭된 키워드")
 
 class ChatResponse(BaseModel):
     """AI 챗봇 응답 모델"""
@@ -762,6 +1076,8 @@ class ChatResponse(BaseModel):
     status: str = Field(..., description="응답 상태", example="success")
     matched_keywords: Optional[List[str]] = Field(None, description="매칭된 키워드 목록", example=["훈련장려금", "언제", "받기"])
     response_type: str = Field(..., description="응답 유형 (keyword/ollama/fallback)", example="keyword")
+    related_questions: Optional[List[RelatedQuestion]] = Field(None, description="관련 질문 목록")
+    total_related: Optional[int] = Field(None, description="관련 질문 총 개수")
 
     class Config:
         schema_extra = {
@@ -770,7 +1086,17 @@ class ChatResponse(BaseModel):
                 "model": "Keyword-based Fast Response System",
                 "status": "success",
                 "matched_keywords": ["훈련장려금", "언제", "받기", "단위기간", "2주"],
-                "response_type": "keyword"
+                "response_type": "keyword",
+                "related_questions": [
+                    {
+                        "id": "훈련장려금_금액",
+                        "question": "훈련장려금은 얼마인가요?",
+                        "answer_preview": "훈련장려금은 하루 수업을 모두 참여시 일일 15,800원이...",
+                        "score": 4.2,
+                        "matched_keywords": ["훈련장려금", "얼마"]
+                    }
+                ],
+                "total_related": 3
             }
         }
 
@@ -847,6 +1173,76 @@ class Message(BaseModel):
             }
         }
 
+def analyze_question_intent(user_input: str) -> dict:
+    """질문의 의도를 분석하여 카테고리와 유형을 반환합니다."""
+    input_lower = user_input.lower().strip()
+    
+    # 일반적인 인사말/대화 패턴 (항상 Claude가 처리해야 함)
+    general_greetings = ["hi", "hello", "안녕", "헬로", "하이", "좋은아침", "안녕하세요", "반가워", "처음뵙겠습니다"]
+    general_conversation = ["어떻게", "무엇", "뭐해", "잘지내", "기분", "날씨", "감사", "고마워", "미안", "죄송"]
+    code_questions = ["코드", "프로그래밍", "개발", "파이썬", "자바스크립트", "html", "css", "알고리즘", "함수", "변수"]
+    general_questions = ["질문", "받아주", "도와주", "할 수 있", "가능한", "어떤", "무슨", "왜", "설명해"]
+    
+    # 일반 대화 패턴 체크 (확장된 패턴)
+    is_general_conversation = any(pattern in input_lower for pattern in 
+                                general_greetings + general_conversation + code_questions + general_questions)
+    
+    # 질문 유형 분류
+    intent_patterns = {
+        "금액_문의": ["얼마", "금액", "돈", "원", "비용", "가격"],
+        "시기_문의": ["언제", "몇일", "시간", "기간", "때", "일정"],
+        "방법_문의": ["어떻게", "방법", "어디서", "누구", "절차", "과정"],
+        "가능_여부": ["가능", "될까", "되나", "할 수 있", "괜찮", "상관없"],
+        "조건_문의": ["조건", "요구사항", "필요", "기준", "자격"],
+        "문제_해결": ["안돼", "안되", "오류", "문제", "고장", "실패", "불가"]
+    }
+    
+    # 주제 카테고리 분류 (확장된 키워드 매핑)
+    topic_categories = {
+        "훈련장려금": ["훈련장려금", "장려금", "수당", "지급", "입금", "계좌", "15800", "15,800"],
+        "출결관리": ["출결", "출석", "지각", "조퇴", "외출", "결석", "QR", "체크", "입실", "퇴실", "HRD", "앱", "스크린샷"],
+        "공결신청": ["공결", "병원", "진료", "입원", "예비군", "결혼", "상", "진단서", "처방전", "치과", "사랑니"],
+        "교육도구": ["줌", "zoom", "노트북", "맥북", "교재", "캠", "배경", "설정", "화면", "웹캠", "카메라"],
+        "행정업무": ["서류", "증명서", "신청", "변경", "계좌", "휴가", "실업급여", "수강증명서", "이사", "주소"],
+        "수료_취업": ["수료", "취업", "인턴", "포트폴리오", "면접", "조기취업", "중도포기", "80%", "출석률"],
+        "기초교육": ["기초클래스", "OT", "등록", "훈련생", "내일배움카드", "국취제", "국민취업지원제도"],
+        "규정준수": ["해외여행", "해외출국", "장소이동", "개인소지", "화장실", "자리비움", "녹화본"]
+    }
+    
+    detected_intent = "일반_문의"
+    detected_topic = "기타"
+    confidence = 0.0
+    
+    # 일반 대화인 경우 특별 처리
+    if is_general_conversation:
+        detected_topic = "일반대화"
+        confidence = 0.0  # 키워드 매칭 점수를 낮춤
+    else:
+        # 의도 분석
+        for intent, keywords in intent_patterns.items():
+            matches = sum(1 for keyword in keywords if keyword in input_lower)
+            if matches > 0:
+                detected_intent = intent
+                confidence += matches * 0.2
+                break
+        
+        # 주제 분석
+        for topic, keywords in topic_categories.items():
+            matches = sum(1 for keyword in keywords if keyword in input_lower)
+            if matches > 0:
+                detected_topic = topic
+                confidence += matches * 0.3
+                break
+    
+    return {
+        "intent": detected_intent,
+        "topic": detected_topic,
+        "confidence": min(confidence, 1.0),
+        "input_length": len(user_input),
+        "question_words": len([w for w in input_lower.split() if w in ["뭐", "무엇", "어떤", "왜", "어디", "언제", "누구", "어떻게"]]),
+        "is_general_conversation": is_general_conversation
+    }
+
 def find_best_match(user_input: str) -> tuple:
     """사용자 입력과 가장 잘 매칭되는 QA를 찾습니다."""
     user_input_lower = user_input.lower().strip()
@@ -893,6 +1289,129 @@ def find_best_match(user_input: str) -> tuple:
             best_match = qa_data
             matched_keywords = keywords_found
     return best_match, best_score, matched_keywords
+
+def find_related_questions_smart(user_input: str, limit: int = 5, min_score: float = 0.5, context_keywords: List[str] = None) -> List[dict]:
+    """지능적인 매칭 시스템으로 관련된 질문들을 점수순으로 반환합니다."""
+    user_input_lower = user_input.lower().strip()
+    related_questions = []
+    
+    # 질문 의도 분석
+    intent_analysis = analyze_question_intent(user_input)
+    logger.info(f"질문 의도 분석: {intent_analysis}")
+    
+    # 맥락 키워드가 있으면 추가 가중치 적용
+    context_boost = {}
+    if context_keywords:
+        for keyword in context_keywords:
+            context_boost[keyword.lower()] = 1.5
+    
+    for qa_id, qa_data in QA_DATABASE.items():
+        score = 0
+        keywords_found = []
+        relevance_factors = []
+        
+        # 1. 의도 기반 매칭 (새로운 최우선 매칭)
+        qa_intent = analyze_question_intent(qa_data["question"])
+        if qa_intent["intent"] == intent_analysis["intent"] and qa_intent["topic"] == intent_analysis["topic"]:
+            score += 10  # 의도와 주제가 모두 같으면 최고 점수
+            relevance_factors.append("intent_topic_match")
+        elif qa_intent["intent"] == intent_analysis["intent"]:
+            score += 6  # 의도만 같아도 높은 점수
+            relevance_factors.append("intent_match")
+        elif qa_intent["topic"] == intent_analysis["topic"]:
+            score += 4  # 주제만 같아도 점수 부여
+            relevance_factors.append("topic_match")
+        
+        # 2. 정확한 키워드 매칭 (기존 방식 개선)
+        for keyword in qa_data["keywords"]:
+            keyword_lower = keyword.lower()
+            if keyword_lower in user_input_lower:
+                base_score = 3  # 의도 매칭보다 낮게 조정
+                # 맥락 가중치 적용
+                if keyword_lower in context_boost:
+                    base_score *= context_boost[keyword_lower]
+                score += base_score
+                keywords_found.append(keyword)
+                relevance_factors.append("exact_keyword")
+        
+        # 3. 의미론적 유사도 (개선된 버전)
+        question_similarity = SequenceMatcher(None, user_input_lower, qa_data["question"].lower()).ratio()
+        if question_similarity > 0.4:  # 임계값 상향 조정
+            score += question_similarity * 3  # 가중치 증가
+            relevance_factors.append("question_similarity")
+        
+        # 4. 답변 품질 점수 (답변 길이와 구체성 고려)
+        answer_quality = min(len(qa_data["answer"]) / 100, 2.0)  # 답변 길이 기반 품질 점수
+        if any(word in qa_data["answer"] for word in ["예를 들어", "다만", "단,", "참고", "자세한"]):
+            answer_quality += 0.5  # 구체적인 설명이 있으면 추가 점수
+        score += answer_quality
+        
+        # 5. 부분 키워드 매칭 (기존 방식 유지하되 가중치 조정)
+        for keyword in qa_data["keywords"]:
+            keyword_lower = keyword.lower()
+            if len(keyword_lower) >= 2:
+                user_words = user_input_lower.replace('?', '').replace('!', '').replace('.', '').split()
+                for word in user_words:
+                    if len(word) >= 2:
+                        if (keyword_lower in word or word in keyword_lower) and keyword not in keywords_found:
+                            base_score = 1  # 점수 축소
+                            if keyword_lower in context_boost:
+                                base_score *= context_boost[keyword_lower]
+                            score += base_score
+                            keywords_found.append(keyword)
+                            relevance_factors.append("partial_keyword")
+        
+        # 최소 점수 이상인 경우만 포함
+        if score >= min_score:
+            related_questions.append({
+                "id": qa_id,
+                "question": qa_data["question"],
+                "answer": qa_data["answer"],
+                "score": round(score, 2),
+                "matched_keywords": keywords_found,
+                "relevance_factors": relevance_factors,
+                "intent": qa_intent["intent"],
+                "topic": qa_intent["topic"]
+            })
+    
+    # 점수순으로 정렬하고 제한된 개수만 반환
+    related_questions.sort(key=lambda x: x["score"], reverse=True)
+    return related_questions[:limit]
+
+def find_related_questions(user_input: str, limit: int = 5, min_score: float = 0.5, context_keywords: List[str] = None) -> List[dict]:
+    """사용자 입력과 관련된 여러 질문들을 점수순으로 반환합니다. (하위 호환성 유지)"""
+    return find_related_questions_smart(user_input, limit, min_score, context_keywords)
+
+def get_context_keywords(session_id: str) -> List[str]:
+    """세션의 이전 대화에서 자주 나온 키워드들을 추출합니다."""
+    if not session_id:
+        return []
+    
+    try:
+        messages = get_session_messages(session_id)
+        keyword_count = {}
+        
+        # 최근 5개 메시지만 분석 (너무 오래된 대화는 제외)
+        recent_messages = messages[-10:] if len(messages) > 10 else messages
+        
+        for message in recent_messages:
+            if message.role == "user":  # 사용자 메시지만 분석
+                content_lower = message.content.lower()
+                
+                # QA 데이터베이스의 모든 키워드와 매칭
+                for qa_id, qa_data in QA_DATABASE.items():
+                    for keyword in qa_data["keywords"]:
+                        keyword_lower = keyword.lower()
+                        if keyword_lower in content_lower:
+                            keyword_count[keyword_lower] = keyword_count.get(keyword_lower, 0) + 1
+        
+        # 빈도순으로 정렬하여 상위 키워드 반환
+        sorted_keywords = sorted(keyword_count.items(), key=lambda x: x[1], reverse=True)
+        return [keyword for keyword, count in sorted_keywords[:5]]  # 상위 5개 키워드
+        
+    except Exception as e:
+        logger.warning(f"컨텍스트 키워드 추출 실패: {str(e)}")
+        return []
 
 def create_session(title: str = "새로운 대화") -> str:
     """새로운 채팅 세션 생성"""
@@ -1002,79 +1521,94 @@ def update_session_title(session_id: str, title: str):
     conn.commit()
     conn.close()
 
-async def call_ollama(prompt: str, max_tokens: int = 512, temperature: float = 0.6) -> str:
-    """Ollama API를 호출하여 응답을 받습니다."""
+async def call_claude(user_prompt: str, max_tokens: int = 1000, temperature: float = 0.7, context_data: List[dict] = None) -> Optional[str]:
+    """Claude API를 사용하여 응답 생성"""
+    if not claude_client:
+        logger.warning("Claude 클라이언트가 초기화되지 않았습니다")
+        return None
+    
+    try:
+        # 컨텍스트가 있는 경우 프롬프트에 포함
+        if context_data:
+            context_info = "\n".join([f"Q: {item['question']}\nA: {item['answer']}" for item in context_data[:3]])
+            enhanced_prompt = f"""다음은 관련된 정보입니다:
+{context_info}
+
+위 정보를 참고하여 다음 질문에 한국어로 답변해주세요:
+{user_prompt}
+
+답변 시 주의사항:
+- 정확하고 도움이 되는 정보를 제공해주세요
+- 한국어로 자연스럽게 답변해주세요
+- 관련 정보가 있다면 활용하되, 없다면 일반적인 지식으로 답변해주세요"""
+        else:
+            enhanced_prompt = f"""다음 질문에 한국어로 친절하고 도움이 되는 답변을 해주세요:
+{user_prompt}
+
+답변 시 주의사항:
+- 정확하고 유용한 정보를 제공해주세요
+- 한국어로 자연스럽게 답변해주세요
+- 친근하고 전문적인 톤으로 답변해주세요"""
+        
+        # Claude API 호출
+        response = claude_client.make_request(enhanced_prompt, max_tokens)
+        
+        if response:
+            logger.info("Claude API 호출 성공")
+            return response.strip()
+        else:
+            logger.warning("Claude API 응답이 비어있습니다")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Claude API 호출 실패: {str(e)}")
+        return None
+
+async def call_gpt4o_mini(prompt: str, max_tokens: int = 512, temperature: float = 0.6, context_data: List[dict] = None) -> str:
+    """GPT-4o-mini API를 호출하여 응답을 받습니다."""
     
     # 입력 검증
     if not prompt or not prompt.strip():
         return "입력이 비어있습니다."
     
-    # 우선순위가 높은 URL만 시도 (빠른 fallback을 위해)
-    urls_to_try = []
+    if not gpt_client:
+        return "GPT-4o-mini 클라이언트가 초기화되지 않았습니다. API 키를 확인해주세요."
     
-    # 외부 Ollama 서비스가 설정되어 있으면 최우선
-    if EXTERNAL_OLLAMA_URL:
-        urls_to_try.append(EXTERNAL_OLLAMA_URL)
+    # 🎓 훈련 전문가로서 gpt-4o-mini 프롬프트 강화
+    system_context = """당신은 멋쟁이사자처럼 K-Digital Training 부트캠프의 전문 상담사입니다.
+
+📋 주요 분야별 정확한 정보:
+• 훈련장려금: 일일 15,800원, 80% 출석 필요, 단위기간별 지급 (2-3주 소요)
+• 출결관리: QR코드 필수, 지각/조퇴/외출 3회 = 결석 1회, HRD앱 사용
+• 공결신청: 병원진료(진단서 필요), 예비군, 경조사 등 인정, 질병공결은 10%까지
+• 줌수업: 9-18시 필수참여, 카메라 켜기 의무, 배경설정 필요
+• 수료조건: 전체 훈련일수 80% 이상 출석
+• 노트북: 개강 1주일내 신청, 반납시 원래 포장 필요
+
+친절하고 정확하게 답변하되, 규정에 관한 사항은 명확히 안내해주세요."""
+
+    enhanced_prompt = f"{system_context}\n\n질문: {prompt}"
     
-    # 기본 URL 추가
-    urls_to_try.append(OLLAMA_BASE_URL)
+    if context_data:
+        context_info = "\n\n관련 규정 참고:\n"
+        for i, ctx in enumerate(context_data[:3], 1):  # 상위 3개만
+            context_info += f"{i}. {ctx['question']}\n→ {ctx['answer'][:150]}{'...' if len(ctx['answer']) > 150 else ''}\n\n"
+        enhanced_prompt = f"{system_context}\n\n{context_info}질문: {prompt}\n\n위 관련 규정을 참고하여 정확하고 도움이 되는 답변을 해주세요."
     
-    # 최대 2개 URL만 시도 (타임아웃 방지)
-    for url in urls_to_try[:2]:
-        try:
-            full_url = f"{url}/api/generate"
-            logger.info(f"Ollama 연결 시도: {full_url}")
+    try:
+        logger.info("GPT-4o-mini API 호출 시작")
+        response = gpt_client.make_request(enhanced_prompt, max_tokens)
+        if response and len(response.strip()) > 5:
+            logger.info("GPT-4o-mini API 호출 성공")
+            return response
+        else:
+            logger.warning("GPT-4o-mini API 빈 응답")
+            return "죄송합니다. GPT-4o-mini에서 적절한 응답을 받지 못했습니다."
             
-            payload = {
-                "model": OLLAMA_MODEL,
-                "prompt": f"다음 질문에 대해 한국어로 친절하고 정확하게 답변해주세요: {prompt}",
-                "stream": False,
-                "options": {
-                    "num_predict": max_tokens,
-                    "temperature": temperature
-                }
-            }
-            
-            response = requests.post(full_url, json=payload, timeout=5)
-            response.raise_for_status()
-            
-            # JSON 응답 처리
-            try:
-                result = response.json()
-            except json.JSONDecodeError as e:
-                logger.error(f"Ollama JSON 파싱 오류 ({url}): {str(e)}")
-                continue
-            
-            # 응답 검증
-            if not isinstance(result, dict):
-                logger.error(f"Ollama 응답이 딕셔너리가 아님 ({url}): {type(result)}")
-                continue
-                
-            ollama_response = result.get("response", "").strip()
-            if not ollama_response:
-                logger.warning(f"Ollama 빈 응답 받음 ({url})")
-                continue
-            
-            logger.info(f"Ollama 연결 성공: {url}")
-            return ollama_response
-            
-        except requests.exceptions.Timeout:
-            logger.warning(f"Ollama 타임아웃 ({url})")
-            continue
-        except requests.exceptions.ConnectionError:
-            logger.warning(f"Ollama 연결 오류 ({url})")
-            continue
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"Ollama 요청 실패 ({url}): {str(e)}")
-            continue
-        except Exception as e:
-            logger.error(f"Ollama 처리 오류 ({url}): {str(e)}")
-            continue
+    except Exception as e:
+        logger.error(f"GPT-4o-mini API 호출 실패: {str(e)}")
+        return f"죄송합니다. GPT-4o-mini API 연결에 문제가 발생했습니다: {str(e)}"
     
-    # 모든 연결 시도 실패
-    logger.error("모든 Ollama 연결 시도 실패")
-    logger.error(f"시도한 URL들: {urls_to_try}")
-    return "죄송합니다. AI 모델에 연결할 수 없습니다. 키워드 기반 응답만 사용 가능합니다."
 
 # === Google OAuth 인증 API (임시 비활성화) ===
 # OAuth 관련 기능은 authlib 버전 문제로 임시 비활성화
@@ -1157,51 +1691,323 @@ async def chat_with_hybrid(request: ChatRequest):
         # 간단한 로깅 (선택적)
         logger.info(f"사용자 질문: {request.prompt}")
         
-        # 1단계: 키워드 기반 빠른 응답 시도
-        best_match, score, matched_keywords = find_best_match(request.prompt)
+        # 🚀 채팅 모드: Claude 모델 우선 사용
+        if request.use_claude:
+            logger.info("채팅 모드: Claude 모델 우선 사용")
+            
+            # 질문 의도 분석
+            user_intent = analyze_question_intent(request.prompt)
+            logger.info(f"질문 의도 분석: {user_intent}")
+            
+            # 일반 대화인 경우 바로 Claude 사용
+            if user_intent.get("is_general_conversation", False):
+                logger.info("일반 대화 감지 - Claude 직접 사용")
+                try:
+                    ai_response = await call_claude(
+                        request.prompt, 
+                        request.max_new_tokens, 
+                        request.temperature,
+                        context_data=[]
+                    )
+                    
+                    if ai_response and len(ai_response.strip()) > 5:
+                        return ChatResponse(
+                            response=ai_response,
+                            model="Claude-3-Haiku",
+                            status="success",
+                            matched_keywords=[],
+                            response_type="claude_chat",
+                            related_questions=None,
+                            total_related=0
+                        )
+                except Exception as e:
+                    logger.error(f"Claude 일반 대화 실패: {str(e)}")
         
-        if best_match and score > 0.1:  # 임계값 대폭 낮춤 (더 많은 매칭)
-            response = best_match["answer"]
-            status = "success"
-            response_type = "keyword"
-            model_name = "Keyword-based Fast Response System"
-        else:
-            # 2단계: 키워드 매칭 실패 시 Ollama 사용
-            if request.use_ollama:
-                ollama_response = await call_ollama(
+        # 🔄 GPT-4o-mini 모델 사용 (Claude 실패 시 또는 직접 사용)
+        elif request.use_gpt4o:
+            logger.info("채팅 모드: GPT-4o-mini 모델 우선 사용")
+            
+            # 질문 의도 분석
+            user_intent = analyze_question_intent(request.prompt)
+            logger.info(f"질문 의도 분석: {user_intent}")
+            
+            # 일반 대화인 경우 바로 GPT-4o-mini 사용 (키워드 검색 생략)
+            if user_intent.get("is_general_conversation", False):
+                logger.info("일반 대화 감지 - GPT-4o-mini 직접 사용")
+                try:
+                    ai_response = await call_gpt4o_mini(
+                        request.prompt, 
+                        request.max_new_tokens, 
+                        request.temperature,
+                        context_data=[]  # 일반 대화는 컨텍스트 없이
+                    )
+                    
+                    if ai_response and "연결할 수 없습니다" not in ai_response and len(ai_response.strip()) > 5:
+                        # 📝 대화 기록 저장
+                        if request.session_id:
+                            try:
+                                save_message(request.session_id, "user", request.prompt)
+                                save_message(request.session_id, "assistant", ai_response, 
+                                           response_type="gpt4o_chat", model_used="gpt-3.5-turbo (General Chat)")
+                            except Exception as e:
+                                logger.warning(f"대화 기록 저장 실패: {str(e)}")
+                        
+                        logger.info("GPT-4o-mini 일반 대화 응답 성공")
+                        return ChatResponse(
+                            response=ai_response,
+                            model="gpt-3.5-turbo (General Chat)",
+                            status="success",
+                            matched_keywords=[],
+                            response_type="gpt4o_chat",
+                            related_questions=None,
+                            total_related=0
+                        )
+                except Exception as e:
+                    logger.error(f"GPT-4o-mini 일반 대화 실패: {str(e)}")
+            # GPT-4o-mini를 사용하지 않거나 실패 시 일반 대화 처리
+            if user_intent.get("is_general_conversation", False):
+                logger.info("일반 대화 감지 - 기본 응답 제공")
+                # 입력에 따른 적절한 응답 선택
+                user_input_lower = request.prompt.lower().strip()
+                
+                if any(greeting in user_input_lower for greeting in ["hi", "hello", "안녕", "하이", "헬로"]):
+                    response = "안녕하세요! 저는 멋쟁이사자처럼 K-Digital Training 부트캠프 전문 상담사입니다. 훈련장려금, 출결, 공결 등 무엇이든 궁금한 점을 물어보세요!"
+                elif any(word in user_input_lower for word in ["감사", "고마워", "고맙"]):
+                    response = "천만에요! 언제든지 궁금한 것이 있으시면 편하게 물어보세요."
+                elif any(word in user_input_lower for word in ["잘지내", "어떻게", "뭐해"]):
+                    response = "저는 훈련생 여러분을 돕기 위해 항상 대기하고 있어요! 궁금한 점이 있으시면 언제든 말씀해주세요."
+                else:
+                    response = "안녕하세요! 무엇을 도와드릴까요? 훈련장려금, 출결, 공결 등 궁금한 점을 물어보세요."
+                
+                return ChatResponse(
+                    response=response,
+                    model="Smart Intent-based Response System",
+                    status="greeting",
+                    matched_keywords=[],
+                    response_type="fallback",
+                    related_questions=None,
+                    total_related=0
+                )
+            
+            # 훈련 관련 질문인 경우만 컨텍스트 검색 수행
+            context_keywords = get_context_keywords(request.session_id) if request.session_id else []
+            if context_keywords:
+                logger.info(f"컨텍스트 키워드: {context_keywords}")
+            
+            # 관련 질문들 검색 (컨텍스트 제공용)
+            related_questions_data = find_related_questions_smart(
+                request.prompt, 
+                limit=5,  # 컨텍스트용으로 적당히
+                min_score=0.5,  # 관련성 있는 것만
+                context_keywords=context_keywords
+            )
+            
+            # 🤖 GPT-4o-mini 모델 우선 사용 (항상 먼저 시도)
+            try:
+                ai_response = await call_gpt4o_mini(
                     request.prompt, 
                     request.max_new_tokens, 
-                    request.temperature
+                    request.temperature,
+                    context_data=related_questions_data  # 관련 QA 데이터 컨텍스트 제공
                 )
+                model_name = "gpt-3.5-turbo"
                 
-                # Ollama 응답이 실패 메시지인지 확인
-                if "연결할 수 없습니다" in ollama_response or "죄송합니다" in ollama_response:
-                    # 더 도움이 되는 기본 응답 제공
-                    response = "안녕하세요! 라이언 헬퍼입니다. 😊\n\n"
-                    response += "현재 고급 AI 기능은 점검 중이지만, 빠른 키워드 검색으로 도움을 드릴 수 있습니다!\n\n"
-                    response += "📋 **자주 문의하는 주제들:**\n"
-                    response += "• 🖥️ 줌/배경화면 설정\n• 💰 훈련장려금/계좌정보\n• 📝 출결/외출/공결 관련\n• 🚻 화장실/자리비움\n• 📚 기초클래스/출결등록\n• 💳 내일배움카드/등록\n• 🦷 사랑니/치과진료 공결\n• 🏥 입원/진단서 관련\n\n"
-                    response += "구체적인 키워드로 질문해주시면 정확한 답변을 즉시 드릴 수 있습니다! ✨"
-                    status = "fallback"
-                    response_type = "keyword"
-                    model_name = "Keyword-based Fast Response System"
-                    matched_keywords = []
+                # GPT-4o-mini 응답이 성공적인 경우 (항상 우선 반환)
+                if ai_response and "연결할 수 없습니다" not in ai_response and "API 연결에 문제가 발생했습니다" not in ai_response and len(ai_response.strip()) > 5:
+                    # 관련 질문들을 추천으로 제공 (높은 점수만)
+                    related_questions = []
+                    for rq in related_questions_data[:3]:  # 상위 3개만
+                        if rq["score"] > 4.0:  # 훨씬 높은 점수만 (정말 관련성이 확실한 것만)
+                            answer_preview = rq["answer"]
+                            if len(answer_preview) > 80:
+                                answer_preview = answer_preview[:80] + "..."
+                            
+                            related_questions.append(RelatedQuestion(
+                                id=rq["id"],
+                                question=rq["question"],
+                                answer_preview=answer_preview,
+                                score=rq["score"],
+                                matched_keywords=rq["matched_keywords"]
+                            ))
+                    
+                    # 📝 대화 기록 저장 (GPT-4o-mini 성공 시)
+                    if request.session_id:
+                        try:
+                            save_message(request.session_id, "user", request.prompt)
+                            save_message(request.session_id, "assistant", ai_response, 
+                                       response_type="gpt4o_chat", model_used=f"{model_name} (Chat Mode)")
+                        except Exception as e:
+                            logger.warning(f"대화 기록 저장 실패: {str(e)}")
+                    
+                    logger.info(f"{model_name} 모델 응답 성공 (우선 반환)")
+                    return ChatResponse(
+                        response=ai_response,
+                        model=f"{model_name} (Chat Mode)",
+                        status="success",
+                        matched_keywords=[],
+                        response_type="gpt4o_chat",
+                        related_questions=related_questions if related_questions else None,
+                        total_related=len(related_questions) if related_questions else 0
+                    )
                 else:
-                    response = ollama_response
-                    status = "success"
-                    response_type = "ollama"
-                    model_name = OLLAMA_MODEL
-                    matched_keywords = []
+                    logger.warning(f"{model_name} 응답이 빈 응답이거나 오류 메시지")
+            except Exception as e:
+                logger.error(f"{model_name} 모델 사용 실패: {str(e)}")
+            
+            # GPT-4o-mini 실패 시에만 QA 데이터베이스로 fallback
+            logger.info("GPT-4o-mini 실패, QA 데이터베이스로 전환")
+        
+        # GPT-4o-mini를 사용하지 않거나 실패한 경우에만 키워드 기반 처리 진행
+        
+        # 🔍 검색 모드 또는 GPT-4o-mini 실패 시: 키워드 기반 처리
+        logger.info("키워드 기반 검색 모드 시작")
+        
+        # 📌 먼저 일반 대화 체크 (키워드 검색 전에)
+        user_intent = analyze_question_intent(request.prompt)
+        logger.info(f"질문 의도 분석: {user_intent}")
+        
+        # 일반 대화인 경우 키워드 검색 우회하고 바로 기본 응답
+        if user_intent.get("is_general_conversation", False):
+            logger.info("일반 대화 감지 - 키워드 검색 우회하고 기본 응답 제공")
+            user_input_lower = request.prompt.lower().strip()
+            
+            if any(greeting in user_input_lower for greeting in ["hi", "hello", "안녕", "하이", "헬로"]):
+                response = "안녕하세요! 저는 멋쟁이사자처럼 K-Digital Training 부트캠프 전문 상담사입니다. 훈련장려금, 출결, 공결 등 무엇이든 궁금한 점을 물어보세요!"
+            elif any(word in user_input_lower for word in ["감사", "고마워", "고맙"]):
+                response = "천만에요! 언제든지 궁금한 것이 있으시면 편하게 물어보세요."
+            elif any(word in user_input_lower for word in ["잘지내", "어떻게", "뭐해"]):
+                response = "저는 훈련생 여러분을 돕기 위해 항상 대기하고 있어요! 궁금한 점이 있으시면 언제든 말씀해주세요."
             else:
-                response = "안녕하세요! 라이언 헬퍼입니다. 😊\n\n"
-                response += "현재 고급 AI 기능은 점검 중이지만, 빠른 키워드 검색으로 도움을 드릴 수 있습니다!\n\n"
-                response += "📋 **자주 문의하는 주제들:**\n"
-                response += "• 🖥️ 줌/배경화면 설정\n• 💰 훈련장려금/계좌정보\n• 📝 출결/외출/공결 관련\n• 🚻 화장실/자리비움\n• 📚 기초클래스/출결등록\n• 💳 내일배움카드/등록\n• 🦷 사랑니/치과진료 공결\n• 🏥 입원/진단서 관련\n\n"
-                response += "구체적인 키워드로 질문해주시면 정확한 답변을 즉시 드릴 수 있습니다! ✨"
-                status = "no_match"
-                response_type = "keyword"
-                model_name = "Keyword-based Fast Response System"
-                matched_keywords = []
+                response = "안녕하세요! 무엇을 도와드릴까요? 훈련장려금, 출결, 공결 등 궁금한 점을 물어보세요."
+            
+            return ChatResponse(
+                response=response,
+                model="Smart Intent-based Response System",
+                status="greeting",
+                matched_keywords=[],
+                response_type="general_greeting",
+                related_questions=None,
+                total_related=0
+            )
+        
+        # 컨텍스트 키워드 추출
+        context_keywords = get_context_keywords(request.session_id) if request.session_id else []
+        if context_keywords:
+            logger.info(f"컨텍스트 키워드: {context_keywords}")
+        
+        # 키워드 기반 빠른 응답 시도
+        best_match, score, matched_keywords = find_best_match(request.prompt)
+        
+        # 관련 질문들 검색
+        related_questions_data = find_related_questions_smart(
+            request.prompt, 
+            limit=8,
+            min_score=0.2,
+            context_keywords=context_keywords
+        )
+        related_questions = []
+        
+        # 🎯 키워드 기반 답변 선택 로직 (검색 모드 또는 GPT-4o-mini 실패 시)
+        if related_questions_data and len(related_questions_data) > 0:
+            # 최고 점수 질문을 주 답변으로 선택
+            best_question = related_questions_data[0]
+            
+            # 🎯 훈련 관련 키워드에 대해서만 높은 품질 답변 제공
+            if best_question["score"] > 4.0:  # 높은 신뢰도
+                response = best_question["answer"]
+                status = "success"
+                response_type = "smart_keyword"
+                model_name = "Smart Intent-based Response System"
+                matched_keywords = best_question["matched_keywords"]
+                
+                # 관련 질문들만 별도로 준비 (답변에는 포함하지 않음)
+                for rq in related_questions_data[1:]:
+                    if rq["score"] > 1.5 and rq["id"] != best_question["id"]:  # 중복 제거
+                        answer_preview = rq["answer"]
+                        if len(answer_preview) > 80:
+                            answer_preview = answer_preview[:80] + "..."
+                        
+                        related_questions.append(RelatedQuestion(
+                            id=rq["id"],
+                            question=rq["question"],
+                            answer_preview=answer_preview,
+                            score=rq["score"],
+                            matched_keywords=rq["matched_keywords"]
+                        ))
+            
+            elif best_question["score"] > 1.0:  # 중간 정도 관련성 (모든 키워드에 적용)
+                response = best_question["answer"]
+                status = "partial_match"
+                response_type = "smart_keyword"
+                model_name = "Smart Intent-based Response System"
+                matched_keywords = best_question["matched_keywords"]
+                
+                # 관련 질문들 준비
+                for rq in related_questions_data:
+                    if rq["id"] != best_question["id"] and rq["score"] > 0.8:  # 메인 답변 제외
+                        answer_preview = rq["answer"]
+                        if len(answer_preview) > 80:
+                            answer_preview = answer_preview[:80] + "..."
+                        
+                        related_questions.append(RelatedQuestion(
+                            id=rq["id"],
+                            question=rq["question"],
+                            answer_preview=answer_preview,
+                            score=rq["score"],
+                            matched_keywords=rq["matched_keywords"]
+                        ))
+        else:
+            # 매칭 실패 시 더 간단한 처리
+            if related_questions_data and related_questions_data[0]["score"] > 0.5:
+                # 낮은 점수지만 관련성이 있는 경우 가장 좋은 답변 하나만 제공
+                best_question = related_questions_data[0]
+                response = best_question["answer"]
+                status = "low_confidence"
+                response_type = "smart_keyword"
+                model_name = "Smart Intent-based Response System"
+                matched_keywords = best_question["matched_keywords"]
+                
+                # 나머지는 관련 질문으로만 제공
+                for rq in related_questions_data[1:]:
+                    if rq["score"] > 0.3:
+                        answer_preview = rq["answer"]
+                        if len(answer_preview) > 80:
+                            answer_preview = answer_preview[:80] + "..."
+                        
+                        related_questions.append(RelatedQuestion(
+                            id=rq["id"],
+                            question=rq["question"],
+                            answer_preview=answer_preview,
+                            score=rq["score"],
+                            matched_keywords=rq["matched_keywords"]
+                        ))
+            else:
+                # 진짜로 관련 없는 경우만 GPT-4o-mini 사용
+                if request.use_gpt4o:
+                    ai_response = await call_gpt4o_mini(
+                        request.prompt, 
+                        request.max_new_tokens, 
+                        request.temperature
+                    )
+                    
+                    if "연결할 수 없습니다" in ai_response or "API 연결에 문제가 발생했습니다" in ai_response or "죄송합니다" in ai_response:
+                        response = "죄송합니다. 해당 질문에 대한 정확한 답변을 찾을 수 없습니다.\n\n구체적인 키워드(예: 훈련장려금, 출결, 줌 등)로 다시 질문해주시면 도움을 드릴 수 있습니다."
+                        status = "fallback"
+                        response_type = "fallback"
+                        model_name = "Smart Intent-based Response System"
+                        matched_keywords = []
+                    else:
+                        response = ai_response
+                        status = "success"
+                        response_type = "gpt4o"
+                        model_name = "gpt-3.5-turbo"
+                        matched_keywords = []
+                else:
+                    response = "죄송합니다. 해당 질문에 대한 정확한 답변을 찾을 수 없습니다.\n\n구체적인 키워드(예: 훈련장려금, 출결, 줌 등)로 다시 질문해주시면 도움을 드릴 수 있습니다."
+                    status = "no_match"
+                    response_type = "fallback"
+                    model_name = "Smart Intent-based Response System"
+                    matched_keywords = []
         
         # 응답 데이터 유효성 검사
         if not response:
@@ -1214,8 +2020,33 @@ async def chat_with_hybrid(request: ChatRequest):
             model=model_name,
             status=status,
             matched_keywords=matched_keywords if matched_keywords else [],
-            response_type=response_type
+            response_type=response_type,
+            related_questions=related_questions[:4] if related_questions else None,  # 최대 4개까지
+            total_related=len(related_questions) if related_questions else 0
         )
+        
+        # 대화 기록 저장 (세션 ID가 있는 경우)
+        if request.session_id:
+            try:
+                # 사용자 메시지 저장
+                save_message(
+                    request.session_id, 
+                    "user", 
+                    request.prompt
+                )
+                
+                # 봇 응답 저장
+                save_message(
+                    request.session_id, 
+                    "assistant", 
+                    response,
+                    response_type=response_type,
+                    model_used=model_name
+                )
+                
+                logger.info(f"대화 기록 저장 완료: session_id={request.session_id}")
+            except Exception as e:
+                logger.warning(f"대화 기록 저장 실패: {str(e)}")
         
         # 로그 추가 (질문-답변 쌍 기록)
         logger.info(f"챗봇 응답: response_type={response_type}, response_length={len(response)}")
@@ -1255,28 +2086,45 @@ def health_check():
     - **disconnected**: Ollama 연결 실패
     - **error**: Ollama 오류 발생
     """
-    # Ollama 연결 상태 확인 (빠른 체크)
-    ollama_status = "unknown"
-    try:
-        # 빠른 연결 테스트 (2초 타임아웃)
-        response = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=2)
-        if response.status_code == 200:
-            ollama_status = "connected"
-        else:
-            ollama_status = "error"
-    except:
-        ollama_status = "disconnected"
+    # Claude 상태 확인
+    claude_status = "disconnected"
+    if claude_client:
+        try:
+            # 간단한 연결 테스트
+            test_result = claude_client.test_connection()
+            claude_status = "connected" if test_result else "error"
+        except:
+            claude_status = "error"
+    
+    # GPT-4o-mini 상태 확인
+    gpt4o_status = "disconnected"
+    if gpt_client:
+        try:
+            # 간단한 연결 테스트
+            test_result = gpt_client.test_connection()
+            gpt4o_status = "connected" if test_result else "error"
+        except:
+            gpt4o_status = "error"
+    
+    available_models = []
+    if claude_status == "connected":
+        available_models.append("Claude-3-Haiku")
+    if gpt4o_status == "connected":
+        available_models.append("GPT-4o-mini")
+    available_models.append("Keyword-based")
     
     return {
         "status": "healthy",
-        "model": f"Keyword-based + {OLLAMA_MODEL}",
+        "model": f"Hybrid: {' + '.join(available_models)}",
         "device": "CPU",
         "language": "Korean",
         "qa_count": len(QA_DATABASE),
-        "ollama_url": OLLAMA_BASE_URL,
-        "ollama_status": ollama_status,
-        "response_mode": "hybrid_optimized",
-        "timeout_settings": "5s_connection_30s_graceful"
+        "claude_status": claude_status,
+        "claude_available": bool(claude_client),
+        "gpt4o_status": gpt4o_status,
+        "gpt4o_available": bool(gpt_client),
+        "response_mode": "claude_gpt4o_keyword_hybrid",
+        "timeout_settings": "30s_graceful"
     }
 
 @app.get(
@@ -1299,19 +2147,33 @@ def get_info():
     - **QA 주제**: 키워드 기반 응답 가능한 주제들
     - **Ollama 모델**: 사용 중인 AI 모델명
     """
+    available_ai_models = []
+    if gpt_client:
+        available_ai_models.append("GPT-4o-mini")
+    
     return {
-        "model_name": f"Hybrid System: Keyword-based + {OLLAMA_MODEL}",
+        "model_name": f"Hybrid System: Keyword-based + {' + '.join(available_ai_models) if available_ai_models else 'Keyword-based'}",
         "model_type": "Hybrid AI System",
-        "description": "키워드 기반 빠른 응답 + Ollama GPT-OSS-20B 하이브리드 시스템",
+        "description": "키워드 기반 빠른 응답 + GPT-4o-mini 하이브리드 시스템",
         "capabilities": [
             "한국어 대화",
             "빠른 질문 답변 (키워드 기반)",
-            "AI 생성 응답 (Ollama)",
+            "AI 생성 응답 (GPT-4o-mini)",
             "키워드 매칭",
             "훈련 관련 정보 제공"
         ],
-        "qa_topics": list(QA_DATABASE.keys()),
-        "ollama_model": OLLAMA_MODEL
+        "available_models": {
+            "gpt4o_mini": {
+                "available": bool(gpt_client),
+                "model": "gpt-3.5-turbo",
+                "provider": "OpenAI"
+            },
+            "keyword_based": {
+                "available": True,
+                "qa_topics_count": len(QA_DATABASE)
+            }
+        },
+        "qa_topics": list(QA_DATABASE.keys())
     }
 
 @app.get(
@@ -1719,5 +2581,13 @@ def get_session_info(session_id: str):
     raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 8001))  # 다른 포트 사용
+    port = int(os.getenv("PORT", 8001))
+    
+    print("🚀 멋쟁이사자처럼 AI 챗봇 서버 시작!")
+    print(f"📍 포트: {port}")
+    print(f"🤖 Claude: {'✅ 연결됨' if claude_client else '❌ 연결 안됨'}")
+    print(f"🤖 GPT-4o-mini: {'✅ 연결됨' if gpt_client else '❌ 연결 안됨'}")
+    print(f"📚 QA 데이터베이스: {len(QA_DATABASE)}개 항목 로드됨")
+    print("🌐 http://localhost:8001 에서 접속 가능합니다")
+    
     uvicorn.run(app, host="0.0.0.0", port=port)

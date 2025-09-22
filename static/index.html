@@ -136,11 +136,48 @@
         
         .chat-header {
             background: white;
-            padding: 20px;
             border-bottom: 1px solid #e9ecef;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .header-top {
+            padding: 20px;
             display: flex;
             align-items: center;
             justify-content: space-between;
+        }
+        
+        .tabs-container {
+            display: flex;
+            padding: 0 20px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #e9ecef;
+        }
+        
+        .tab-btn {
+            padding: 12px 20px;
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+            color: #666;
+            border-bottom: 3px solid transparent;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .tab-btn.active {
+            color: #667eea;
+            border-bottom-color: #667eea;
+            background: white;
+        }
+        
+        .tab-btn:hover {
+            color: #667eea;
+            background: rgba(102, 126, 234, 0.1);
         }
         
         .chat-header h1 {
@@ -266,6 +303,119 @@
             padding: 15px;
             color: #666;
             font-style: italic;
+        }
+        
+        /* 탭 컨텐츠 스타일 */
+        .tab-content {
+            display: none;
+            flex: 1;
+            overflow-y: auto;
+        }
+        
+        .tab-content.active {
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .settings-container {
+            padding: 30px;
+            max-width: 600px;
+            margin: 0 auto;
+            width: 100%;
+        }
+        
+        .settings-section {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        
+        .settings-section h3 {
+            font-size: 18px;
+            color: #333;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .api-key-input {
+            width: 100%;
+            padding: 12px 15px;
+            border: 2px solid #e9ecef;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s ease;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .api-key-input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        .settings-btn {
+            padding: 10px 20px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s ease;
+            margin-top: 15px;
+            margin-right: 10px;
+        }
+        
+        .settings-btn:hover {
+            background: #5a6fd8;
+            transform: translateY(-1px);
+        }
+        
+        .settings-btn.secondary {
+            background: #6c757d;
+        }
+        
+        .settings-btn.secondary:hover {
+            background: #5a6268;
+        }
+        
+        .api-status {
+            margin-top: 15px;
+            padding: 10px 15px;
+            border-radius: 8px;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .api-status.connected {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .api-status.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .api-status.testing {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+        
+        .input-label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            color: #495057;
         }
         
         .typing-indicator {
@@ -505,17 +655,29 @@
     <!-- 메인 채팅 영역 -->
     <div class="main-chat">
         <div class="chat-header">
-            <h1>
-                <div class="status-indicator"></div>
-                무엇이 궁금하세요?
-            </h1>
-            <div style="display: flex; gap: 10px;">
-                <button id="searchModeBtn" onclick="toggleMode('search')" class="mode-btn active">🔍 검색 모드</button>
-                <button id="chatModeBtn" onclick="toggleMode('chat')" class="mode-btn">💬 채팅 모드</button>
+            <div class="header-top">
+                <h1>
+                    <div class="status-indicator"></div>
+                    무엇이 궁금하세요?
+                </h1>
+                <div style="display: flex; gap: 10px;">
+                    <button id="searchModeBtn" onclick="toggleMode('search')" class="mode-btn active">🔍 검색 모드</button>
+                    <button id="chatModeBtn" onclick="toggleMode('chat')" class="mode-btn">💬 채팅 모드</button>
+                </div>
+            </div>
+            <div class="tabs-container">
+                <button class="tab-btn active" onclick="switchTab('chat')">
+                    💬 채팅
+                </button>
+                <button class="tab-btn" onclick="switchTab('settings')">
+                    ⚙️ API 설정
+                </button>
             </div>
         </div>
         
-        <div class="chat-messages" id="chatMessages">
+        <!-- 채팅 탭 컨텐츠 -->
+        <div class="tab-content active" id="chatTab">
+            <div class="chat-messages" id="chatMessages">
             <div id="emptyState" class="empty-state">
                 <h2>안녕하세요! 👋</h2>
                 <p>라이언 헬퍼입니다. 빠른 키워드 검색으로 궁금한 점을 해결해드릴게요!</p>
