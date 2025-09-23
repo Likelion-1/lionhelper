@@ -179,14 +179,7 @@ if ANTHROPIC_API_KEY:
     except Exception as e:
         logger.warning(f"Claude 클라이언트 초기화 실패: {str(e)}")
 
-# GPT-4o-mini 클라이언트 초기화 (API 키가 있는 경우에만)
-gpt_client = None
-if OPENAI_API_KEY:
-    try:
-        gpt_client = GPTAPIClient(OPENAI_API_KEY)
-        logger.info("GPT-4o-mini 클라이언트 초기화 완료")
-    except Exception as e:
-        logger.warning(f"GPT-4o-mini 클라이언트 초기화 실패: {str(e)}")
+# GPT 관련 코드 제거됨 - Claude 전용 시스템
 
 # 데이터베이스 초기화
 def init_database():
@@ -791,11 +784,11 @@ try:
 except:
     pass
 
-print("GPT-4o-mini + 키워드 기반 하이브리드 AI 챗봇 시스템이 로드되었습니다.")
-if gpt_client:
-    print("GPT-4o-mini: 활성화됨")
+print("🤖 Claude + 키워드 기반 지능형 AI 챗봇 시스템이 로드되었습니다.")
+if claude_client:
+    print("Claude-3-Haiku: 활성화됨")
 else:
-    print("GPT-4o-mini: 비활성화됨 (API 키 확인 필요)")
+    print("Claude-3-Haiku: 비활성화됨 (API 키 확인 필요)")
 
 # CORS preflight 요청을 위한 OPTIONS 핸들러
 @app.options("/{full_path:path}")
@@ -841,7 +834,7 @@ class ChatRequest(BaseModel):
                     "summary": "📚 전문 정보 질문",
                     "description": "훈련장려금, 출결 등 전문 DB 정보",
                     "value": {
-                        "prompt": "훈련장려금은 언제 받을 수 있나요?",
+                "prompt": "훈련장려금은 언제 받을 수 있나요?",
                         "use_claude": False,
                         "session_id": "training-info-001"
                     }
@@ -919,7 +912,7 @@ class ChatResponse(BaseModel):
                         "matched_keywords": ["훈련장려금", "언제", "받기"],
                         "response_type": "smart_keyword",
                 "related_questions": [
-                            {
+                    {
                                 "id": "1",
                                 "question": "훈련장려금 금액은 얼마인가요?",
                                 "answer_preview": "하루 수업을 모두 참여시 일일 15,800원...",
@@ -1051,21 +1044,21 @@ def analyze_question_intent(user_input: str) -> dict:
         detected_topic = "일반대화"
         confidence = 0.0  # 키워드 매칭 점수를 낮춤
     else:
-        # 의도 분석
-        for intent, keywords in intent_patterns.items():
-            matches = sum(1 for keyword in keywords if keyword in input_lower)
-            if matches > 0:
-                detected_intent = intent
-                confidence += matches * 0.2
-                break
-        
-        # 주제 분석
-        for topic, keywords in topic_categories.items():
-            matches = sum(1 for keyword in keywords if keyword in input_lower)
-            if matches > 0:
-                detected_topic = topic
-                confidence += matches * 0.3
-                break
+    # 의도 분석
+    for intent, keywords in intent_patterns.items():
+        matches = sum(1 for keyword in keywords if keyword in input_lower)
+        if matches > 0:
+            detected_intent = intent
+            confidence += matches * 0.2
+            break
+    
+    # 주제 분석
+    for topic, keywords in topic_categories.items():
+        matches = sum(1 for keyword in keywords if keyword in input_lower)
+        if matches > 0:
+            detected_topic = topic
+            confidence += matches * 0.3
+            break
     
     return {
         "intent": detected_intent,
@@ -1463,7 +1456,7 @@ async def call_claude_with_knowledge(user_prompt: str, keyword_matches: List[dic
             logger.warning("Claude 지식 기반 응답이 비어있습니다")
             return None
             
-    except Exception as e:
+        except Exception as e:
         logger.error(f"Claude 지식 기반 응답 실패: {str(e)}")
         return None
 
@@ -1996,37 +1989,23 @@ def health_check():
             # 간단한 연결 테스트
             test_result = claude_client.test_connection()
             claude_status = "connected" if test_result else "error"
-        except:
+    except:
             claude_status = "error"
-    
-    # GPT-4o-mini 상태 확인
-    gpt4o_status = "disconnected"
-    if gpt_client:
-        try:
-            # 간단한 연결 테스트
-            test_result = gpt_client.test_connection()
-            gpt4o_status = "connected" if test_result else "error"
-        except:
-            gpt4o_status = "error"
     
     available_models = []
     if claude_status == "connected":
         available_models.append("Claude-3-Haiku")
-    if gpt4o_status == "connected":
-        available_models.append("GPT-4o-mini")
     available_models.append("Keyword-based")
     
     return {
         "status": "healthy",
-        "model": f"Hybrid: {' + '.join(available_models)}",
+        "model": f"Intelligent: {' + '.join(available_models)}",
         "device": "CPU",
         "language": "Korean",
         "qa_count": len(QA_DATABASE),
         "claude_status": claude_status,
         "claude_available": bool(claude_client),
-        "gpt4o_status": gpt4o_status,
-        "gpt4o_available": bool(gpt_client),
-        "response_mode": "claude_gpt4o_keyword_hybrid",
+        "response_mode": "claude_enhanced_knowledge",
         "timeout_settings": "30s_graceful"
     }
 
@@ -2051,26 +2030,22 @@ def get_info():
     - **Ollama 모델**: 사용 중인 AI 모델명
     """
     available_ai_models = []
-    if gpt_client:
-        available_ai_models.append("GPT-4o-mini")
+    if claude_client:
+        available_ai_models.append("Claude-3-Haiku")
     
     return {
-        "model_name": f"Hybrid System: Keyword-based + {' + '.join(available_ai_models) if available_ai_models else 'Keyword-based'}",
-        "model_type": "Hybrid AI System",
-        "description": "키워드 기반 빠른 응답 + GPT-4o-mini 하이브리드 시스템",
+        "model_name": f"Intelligent System: {' + '.join(available_ai_models) if available_ai_models else 'Keyword-based'}",
+        "model_type": "Claude-Enhanced Knowledge System",
+        "description": "Claude가 키워드 DB를 참고해서 지능적 답변을 생성하는 시스템",
         "capabilities": [
             "한국어 대화",
-            "빠른 질문 답변 (키워드 기반)",
-            "AI 생성 응답 (GPT-4o-mini)",
-            "키워드 매칭",
-            "훈련 관련 정보 제공"
+            "지능형 질문 답변 (Claude + Knowledge Base)",
+            "키워드 기반 정보 검색",
+            "자연스러운 AI 응답",
+            "훈련 관련 전문 정보 제공",
+            "맥락 기반 추가 안내"
         ],
         "available_models": {
-            "gpt4o_mini": {
-                "available": bool(gpt_client),
-                "model": "gpt-3.5-turbo",
-                "provider": "OpenAI"
-            },
             "keyword_based": {
                 "available": True,
                 "qa_topics_count": len(QA_DATABASE)
@@ -2489,7 +2464,7 @@ if __name__ == "__main__":
     print("🚀 멋쟁이사자처럼 AI 챗봇 서버 시작!")
     print(f"📍 포트: {port}")
     print(f"🤖 Claude: {'✅ 연결됨' if claude_client else '❌ 연결 안됨'}")
-    print(f"🤖 GPT-4o-mini: {'✅ 연결됨' if gpt_client else '❌ 연결 안됨'}")
+# GPT 관련 코드 제거됨
     print(f"📚 QA 데이터베이스: {len(QA_DATABASE)}개 항목 로드됨")
     print("🌐 http://localhost:8001 에서 접속 가능합니다")
     
