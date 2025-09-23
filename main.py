@@ -807,45 +807,47 @@ async def options_handler(request: Request, full_path: str):
 # Pydantic 모델
 class ChatRequest(BaseModel):
     """
-    ## 🤖 멀티 AI 챗봇 요청 모델
+    ## 🧠 Claude 지능형 챗봇 요청 모델
     
-    Claude-3-Haiku + GPT-4o-mini + 키워드 DB 하이브리드 시스템
+    Claude-3-Haiku + Knowledge Base 지능형 시스템
     """
-    prompt: str = Field(..., description="사용자 질문 또는 메시지", example="안녕? 코딩 질문 가능해?")
-    max_new_tokens: Optional[int] = Field(1000, description="AI 응답 최대 토큰 수 (Claude: ~1000, GPT: ~512)", example=1000, ge=50, le=2048)
-    temperature: Optional[float] = Field(0.7, description="창의성 조절 (Claude: 0.7, GPT: 0.6)", example=0.7, ge=0.0, le=2.0)
+    prompt: str = Field(..., description="사용자 질문 또는 메시지", example="안녕? 훈련장려금 언제 받을 수 있어?")
+    max_new_tokens: Optional[int] = Field(1000, description="Claude 응답 최대 토큰 수 (권장: 1000)", example=1000, ge=50, le=2048)
+    temperature: Optional[float] = Field(0.7, description="Claude 창의성 조절 (권장: 0.7)", example=0.7, ge=0.0, le=2.0)
     top_p: Optional[float] = Field(0.9, description="확률 임계값 (0.0-1.0)", example=0.9, ge=0.0, le=1.0)
-    use_claude: Optional[bool] = Field(True, description="🟢 Claude-3-Haiku 사용 (기본값: true)", example=True)
-    session_id: Optional[str] = Field(None, description="대화 세션 ID (대화 맥락 유지용)", example="123e4567-e89b-12d3-a456-426614174000")
+    use_claude: Optional[bool] = Field(True, description="🧠 Claude 지능형 응답 사용 (기본값: true)", example=True)
+    session_id: Optional[str] = Field(None, description="대화 세션 ID (대화 기록용)", example="claude-chat-001")
 
     class Config:
         schema_extra = {
             "examples": {
+                "claude_enhanced": {
+                    "summary": "🧠 Claude 지능형 답변 (추천)",
+                    "description": "Claude가 키워드 DB 참고해서 전문적 답변 생성",
+                    "value": {
+                        "prompt": "훈련장려금은 언제 받을 수 있나요?",
+                        "use_claude": True,
+                        "max_new_tokens": 1000,
+                        "temperature": 0.7,
+                        "session_id": "claude-enhanced-001"
+                    }
+                },
                 "claude_general": {
-                    "summary": "🟢 Claude 일반 대화",
-                    "description": "Claude-3-Haiku로 자유로운 대화 (기본 설정)",
+                    "summary": "💬 Claude 일반 대화",
+                    "description": "일반적인 질문이나 인사말에 대한 자연스러운 응답",
                     "value": {
                         "prompt": "안녕? 파이썬 코딩 질문해도 돼?",
                         "use_claude": True,
                         "session_id": "general-chat-001"
                     }
                 },
-                "keyword_training": {
-                    "summary": "📚 전문 정보 질문",
-                    "description": "훈련장려금, 출결 등 전문 DB 정보",
+                "keyword_fallback": {
+                    "summary": "📚 키워드 응답 (Claude 비활성화)",
+                    "description": "Claude 사용하지 않고 키워드 DB만 사용",
                     "value": {
-                "prompt": "훈련장려금은 언제 받을 수 있나요?",
+                        "prompt": "출결 관리는 어떻게 하나요?",
                         "use_claude": False,
-                        "session_id": "training-info-001"
-                    }
-                },
-                "claude_enhanced": {
-                    "summary": "🚀 Claude + 키워드 하이브리드",
-                    "description": "Claude가 키워드 DB와 함께 정확한 답변 생성",
-                    "value": {
-                        "prompt": "안녕하세요! 출결 관리는 어떻게 하나요?",
-                        "use_claude": True,
-                        "session_id": "hybrid-chat-001"
+                        "session_id": "keyword-only-001"
                     }
                 }
             }
@@ -861,50 +863,58 @@ class RelatedQuestion(BaseModel):
 
 class ChatResponse(BaseModel):
     """
-    ## 🤖 멀티 AI 챗봇 응답 모델
+    ## 🧠 Claude 지능형 챗봇 응답 모델
     
-    Claude-3-Haiku + GPT-4o-mini + 키워드 DB 하이브리드 응답
+    Claude + Knowledge Base 지능형 시스템의 응답
     """
-    response: str = Field(..., description="AI 생성 응답 또는 키워드 매칭 답변", example="안녕하세요! 무엇을 도와드릴까요?")
-    model: str = Field(..., description="사용된 모델명 (Claude-3-Haiku/GPT-4o-mini/Keyword Database)", example="Claude-3-Haiku")
-    status: str = Field(..., description="응답 상태 (success/error/fallback/greeting)", example="success")
-    matched_keywords: Optional[List[str]] = Field(None, description="매칭된 키워드 (키워드 DB 사용시)", example=["훈련장려금", "언제"])
-    response_type: str = Field(..., description="응답 유형 (claude_chat/gpt4o_chat/smart_keyword/general_greeting)", example="claude_chat")
+    response: str = Field(..., description="Claude 지능형 응답 또는 키워드 기반 응답", example="안녕하세요! 훈련장려금에 대해 자세히 안내드리겠습니다...")
+    model: str = Field(..., description="사용된 모델 (Claude + Knowledge Base/Keyword Database)", example="Claude-3-Haiku + Knowledge Base")
+    status: str = Field(..., description="응답 상태 (success/error/fallback)", example="success")
+    matched_keywords: Optional[List[str]] = Field(None, description="참고된 키워드 목록", example=["훈련장려금", "출석", "지급"])
+    response_type: str = Field(..., description="응답 유형 (claude_enhanced/smart_keyword/fallback)", example="claude_enhanced")
     related_questions: Optional[List[RelatedQuestion]] = Field(None, description="관련 질문 목록 (키워드 DB)")
     total_related: Optional[int] = Field(None, description="관련 질문 총 개수")
 
     class Config:
         schema_extra = {
             "examples": {
-                "claude_response": {
-                    "summary": "🟢 Claude-3-Haiku 응답",
-                    "description": "일반 대화나 코딩 질문에 대한 Claude 응답",
+                "claude_enhanced_response": {
+                    "summary": "🧠 Claude 지능형 응답",
+                    "description": "Claude가 키워드 DB 참고해서 생성한 전문적 답변",
                     "value": {
-                        "response": "안녕하세요! 네, 파이썬 코딩 질문 환영합니다. 어떤 부분이 궁금하신가요?",
-                        "model": "Claude-3-Haiku",
-                "status": "success",
-                        "matched_keywords": None,
-                        "response_type": "claude_chat",
-                        "related_questions": None,
-                        "total_related": None
-                    }
-                },
-                "gpt_response": {
-                    "summary": "🔵 GPT-4o-mini 응답",
-                    "description": "GPT-4o-mini 직접 사용 또는 백업 응답",
-                    "value": {
-                        "response": "창의적인 아이디어를 위한 브레인스토밍을 도와드리겠습니다!",
-                        "model": "GPT-4o-mini",
+                        "response": "안녕하세요! 훈련장려금에 대해 안내드리겠습니다.\n\n💰 **훈련장려금 지급 기준:**\n- 일일 15,800원 지급\n- 하루 수업을 모두 참여해야 함\n- 지각, 조퇴, 외출 시 지급 불가\n\n📅 **지급 시기:**\n- 단위기간 마감 후 2-3주 소요\n- 80% 이상 출석률 유지 필요\n\n💡 **추가 팁:**\n- HRD앱으로 출결 체크 필수\n- 공결 신청은 미리 해주세요!\n\n궁금한 점이 더 있으시면 언제든 말씀해 주세요! 😊",
+                        "model": "Claude-3-Haiku + Knowledge Base",
                         "status": "success",
-                        "matched_keywords": None,
-                        "response_type": "gpt4o_chat",
-                        "related_questions": None,
-                        "total_related": None
+                        "matched_keywords": ["훈련장려금", "출석", "지급"],
+                        "response_type": "claude_enhanced",
+                        "related_questions": [
+                            {
+                                "id": "qa_123",
+                                "question": "훈련장려금 지급 조건은?",
+                                "answer_preview": "하루 수업을 모두 참여시 일일 15,800원...",
+                                "score": 0.95,
+                                "matched_keywords": ["훈련장려금", "지급"]
+                            }
+                        ],
+                        "total_related": 5
                     }
                 },
-                "keyword_response": {
-                    "summary": "📚 키워드 DB 응답",
-                    "description": "훈련장려금, 출결 등 전문 정보 응답",
+                "claude_general_response": {
+                    "summary": "💬 Claude 일반 대화 응답",
+                    "description": "일반적인 질문에 대한 친근한 Claude 응답",
+                    "value": {
+                        "response": "안녕하세요! 네, 파이썬 코딩 질문 언제든 환영합니다! 🐍\n\n어떤 부분이 궁금하신가요? 기초 문법부터 고급 기능까지 도움을 드릴 수 있어요. 웹 개발, 데이터 분석, 알고리즘 등 어떤 분야든 편하게 질문해 주세요!\n\n같이 코딩 실력을 늘려가봐요! 💪",
+                        "model": "Claude-3-Haiku + Knowledge Base",
+                        "status": "success",
+                        "matched_keywords": [],
+                        "response_type": "claude_enhanced",
+                        "related_questions": [],
+                        "total_related": 0
+                    }
+                },
+                "keyword_fallback_response": {
+                    "summary": "📚 키워드 DB 응답 (Claude 실패 시)",
+                    "description": "Claude 사용 불가 시 키워드 DB 기반 응답",
                     "value": {
                         "response": "훈련장려금은 해당 과정의 단위기간 마감일을 기준으로 지급까지 2주에서 3주 가량 소요됩니다.",
                         "model": "Keyword Database",
@@ -1524,34 +1534,38 @@ async def root():
     - 일반 대화: "안녕?", "코딩 질문 가능해?"
     - 전문 정보: "훈련장려금은 얼마인가요?"
     """,
-    response_description="AI 모델별 응답 및 메타데이터 (Claude/GPT/키워드)",
+    response_description="Claude 지능형 응답 및 메타데이터 (Enhanced/Keyword)",
     tags=["Chat"]
 )
 async def chat_with_hybrid(request: ChatRequest):
     """
-    ## 🤖 AI 챗봇과 대화
+    ## 🧠 Claude 지능형 AI 챗봇과 대화
     
-    하이브리드 시스템을 사용하여 사용자와 AI 간의 대화를 처리합니다.
+    Claude가 키워드 DB를 참고해서 지능적이고 자연스러운 답변을 생성하는 시스템입니다.
     
-    ### 🔄 처리 방식
-    1. **1단계**: 키워드 기반 빠른 응답 검색
-    2. **2단계**: 키워드 매칭 실패 시 Ollama AI 모델 사용
+    ### 🚀 처리 방식 (NEW!)
+    1. **키워드 검색**: 관련 정보를 DB에서 검색
+    2. **Claude 분석**: 검색된 정보를 참고해서 지능적 답변 생성
+    3. **자연스러운 응답**: 기계적이지 않은 상담사 톤의 답변 제공
     
     ### 📝 요청 데이터
     - **prompt**: 사용자 질문 (필수)
-    - **max_new_tokens**: 최대 토큰 수 (기본값: 512)
-    - **temperature**: 창의성 조절 (기본값: 0.6)
-    - **use_ollama**: Ollama 사용 여부 (기본값: true)
+    - **max_new_tokens**: Claude 응답 길이 (기본값: 1000)
+    - **temperature**: 창의성 조절 (기본값: 0.7)
+    - **use_claude**: Claude 사용 여부 (기본값: true)
+    - **session_id**: 대화 세션 ID (선택사항)
     
     ### 🎯 응답 유형
-    - **keyword**: 키워드 기반 빠른 응답
-    - **ollama**: AI 모델 생성 응답
+    - **claude_enhanced**: Claude가 키워드 DB 참고한 지능적 응답
+    - **keyword**: 키워드 기반 응답 (Claude 실패 시)
     - **fallback**: 기본 안내 응답
     
     ### 💡 주요 기능
-    - 훈련장려금, 출결, 공결 관련 즉시 답변
-    - 줌, 수업, 노트북 관련 정보 제공
-    - 취업, 인턴십, 커리어 상담 안내
+    - 🎓 훈련장려금, 출결, 공결 관련 전문 상담
+    - 💻 줌, 수업, 노트북 관련 자세한 안내
+    - 🚀 취업, 인턴십, 커리어 맞춤 조언
+    - 📚 추가 팁과 단계별 가이드 제공
+    - 🤝 친근하고 전문적인 상담사 톤
     """
     
     try:
