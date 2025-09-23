@@ -11,8 +11,6 @@ from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from typing import Optional, List
 
-import httpx
-from openai import OpenAI
 from anthropic import Anthropic
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -110,235 +108,11 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
         )
     return payload
 
-# OpenAI GPT-4o-mini 설정
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-USE_GPT4O_MINI = os.getenv("USE_GPT4O_MINI", "false").lower() == "true"
-
 # Anthropic Claude API 설정
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 USE_CLAUDE = os.getenv("USE_CLAUDE", "true").lower() == "true"
 
-class GPTAPIClient:
-    def __init__(self, api_key):
-        """GPT API 클라이언트 초기화"""
-        if not api_key:
-            raise ValueError("API 키가 제공되지 않았습니다.")
-            
-        self.logger = logging.getLogger(__name__)
-        self.model = "gpt-4o-mini"
-        
-        # httpx 클라이언트 설정
-        http_client = httpx.Client()
-        
-        # OpenAI 클라이언트 초기화
-        self.client = OpenAI(
-            api_key=api_key,
-            http_client=http_client
-        )
-        
-        self.logger.info(f"GPTAPIClient 초기화 완료 (모델: {self.model})")
-
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        reraise=True
-    )
-    def make_request(self, prompt: str, max_tokens: int = 2000) -> Optional[str]:
-        """GPT API 요청 수행"""
-        self.logger.info(f"API 요청 시작 (프롬프트 길이: {len(prompt)} 문자)")
-        
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                max_tokens=max_tokens
-            )
-            
-            if response and response.choices:
-                result = response.choices[0].message.content
-                self.logger.info("API 요청 성공")
-                return result
-            else:
-                self.logger.error("API 응답이 비어있음")
-                raise Exception("API 응답이 비어있습니다")
-                
-        except Exception as e:
-            self.logger.error(f"API 요청 실패: {str(e)}")
-            raise
-
-    def split_text(self, text: str, max_chunk_size: int = 2000) -> List[str]:
-        """텍스트를 청크로 분할"""
-        if not text:
-            logger.warning("분할할 텍스트가 비어있음")
-            return []
-            
-        logger.info(f"텍스트 분할 시작 (전체 길이: {len(text)} 문자)")
-        chunks = []
-        sentences = text.replace('\r', '').split('\n')
-        
-        current_chunk = []
-        current_size = 0
-        
-        for sentence in sentences:
-            sentence = sentence.strip()
-            if not sentence:
-                continue
-                
-            sentence_size = len(sentence)
-            if current_size + sentence_size > max_chunk_size:
-                if current_chunk:
-                    chunk_text = '\n'.join(current_chunk)
-                    chunks.append(chunk_text)
-                    logger.debug(f"청크 생성: {len(chunk_text)} 문자")
-                current_chunk = [sentence]
-                current_size = sentence_size
-            else:
-                current_chunk.append(sentence)
-                current_size += sentence_size
-                
-        if current_chunk:
-            chunk_text = '\n'.join(current_chunk)
-            chunks.append(chunk_text)
-            logger.debug(f"마지막 청크 생성: {len(chunk_text)} 문자")
-            
-        logger.info(f"텍스트 분할 완료 (총 {len(chunks)}개 청크)")
-        return chunks
-
-    def analyze_text(self, text: str, analysis_type: str = 'vtt') -> str:
-        """텍스트 분석을 수행"""
-        try:
-            # 텍스트를 청크로 분할
-            logger.info(f"텍스트 분석 시작 (유형: {analysis_type})")
-            chunks = self.split_text(text)
-            
-            # 각 청크별로 분석 수행
-            results = []
-            for i, chunk in enumerate(chunks, 1):
-                logger.info(f"청크 {i}/{len(chunks)} 분석 중")
-                
-                # 분석 유형에 따른 프롬프트 설정
-                if analysis_type == 'vtt':
-                    prompt = f"""
-다음은 강의 내용을 텍스트로 변환한 것입니다. 강의 내용을 분석하여 다음 형식으로 응답해주세요:
-
-[강의 내용]
-{chunk}
-
-다음 형식으로 응답해주세요:
-# 주요 내용
-(이 부분의 주요 내용을 2-3문장으로 요약)
-
-# 키워드
-(주요 키워드를 쉼표로 구분하여 나열)
-
-# 분석
-(강의 내용에 대한 전반적인 분석을 3-4문장으로 작성)
-
-# 위험 발언
-(차별적 발언, 부적절한 표현, 민감한 주제 등이 있다면 구체적으로 명시. 없다면 "위험 발언이 없습니다." 라고 표시)
-"""
-                elif analysis_type == 'chat':
-                    prompt = f"""다음 채팅 내용을 분석하여 아래 형식으로 응답해주세요.
-
-# 주요 대화 주제
-- 채팅에서 다뤄진 주요 주제와 내용을 요약하여 나열
-
-# 수강생 감정/태도 분석
-1. 긍정적 반응
-- 수업 내용에 대한 이해와 만족을 표현한 내용
-- 적극적인 참여와 긍정적인 피드백
-
-2. 부정적 반응
-- 수업 내용이나 진행에 대한 불만이나 어려움 표현
-- 부정적인 감정이나 태도가 드러난 내용
-
-3. 질문/요청사항
-- 수업 내용에 대한 질문
-- 수업 진행 방식에 대한 요청사항
-
-# 어려움/불만 상세 분석
-1. 학습적 어려움
-- 수업 내용의 난이도나 이해 문제
-- 학습 진도나 과제 관련 어려움
-
-2. 수업 진행 관련 문제
-- 수업 속도나 시간 배분 문제
-- 강의 방식이나 상호작용 관련 문제
-
-3. 기술적 문제
-- 온라인 플랫폼 사용의 어려움
-- 음질, 화질 등 기술적 문제
-
-# 개선 제안
-1. 학습 내용 개선
-- 수업 내용의 난이도 조정 제안
-- 추가 학습 자료나 예제 요청
-
-2. 수업 방식 개선
-- 수업 진행 방식 개선 제안
-- 상호작용 방식 개선 제안
-
-3. 기술적 지원 강화
-- 온라인 플랫폼 개선 제안
-- 기술적 문제 해결을 위한 제안
-
-# 위험 발언 및 주의사항
-- 부적절한 언어 사용이나 태도
-- 수업 분위기를 해치는 발언
-- 개인정보 노출 위험
-
-# 종합 제언
-- 전반적인 개선점과 권장사항
-- 향후 수업 운영을 위한 제안사항
-
-채팅 내용:
-{chunk}"""
-                else:
-                    prompt = f"""
-다음 텍스트를 분석하여 주요 내용을 요약해주세요:
-
-[텍스트 내용]
-{chunk}
-
-다음 형식으로 응답해주세요:
-# 요약
-(주요 내용을 3-4문장으로 요약)
-"""
-                
-                try:
-                    result = self.make_request(prompt)
-                    if result:
-                        results.append(result)
-                    else:
-                        results.append(f"[청크 {i} 분석 실패]")
-                except Exception as e:
-                    logger.error(f"청크 {i} 분석 중 오류 발생: {str(e)}")
-                    results.append(f"[청크 {i} 분석 오류: {str(e)}]")
-                
-                # 마지막 청크가 아닌 경우 API 호출 간격 유지
-                if i < len(chunks):
-                    time.sleep(2)
-            
-            final_result = "\n\n---\n\n".join(results)
-            logger.info("텍스트 분석 완료")
-            return final_result
-            
-        except Exception as e:
-            logger.error(f"분석 중 예상치 못한 오류 발생: {str(e)}")
-            return f"분석 중 오류 발생: {str(e)}"
-
-    def test_connection(self) -> bool:
-        """API 연결 테스트"""
-        try:
-            logger.info("API 연결 테스트 시작")
-            result = self.make_request("안녕하세요", max_tokens=10)
-            return bool(result)
-        except Exception as e:
-            logger.error(f"API 연결 테스트 실패: {str(e)}")
-            return False
+# GPTAPIClient 클래스 제거됨 - Claude 전용 시스템으로 전환
 
 
 class ClaudeAPIClient:
@@ -1049,50 +823,35 @@ class ChatRequest(BaseModel):
     temperature: Optional[float] = Field(0.7, description="창의성 조절 (Claude: 0.7, GPT: 0.6)", example=0.7, ge=0.0, le=2.0)
     top_p: Optional[float] = Field(0.9, description="확률 임계값 (0.0-1.0)", example=0.9, ge=0.0, le=1.0)
     use_claude: Optional[bool] = Field(True, description="🟢 Claude-3-Haiku 사용 (기본값: true)", example=True)
-    use_gpt4o: Optional[bool] = Field(False, description="🔵 GPT-4o-mini 사용 (백업 또는 직접 지정)", example=False)
     session_id: Optional[str] = Field(None, description="대화 세션 ID (대화 맥락 유지용)", example="123e4567-e89b-12d3-a456-426614174000")
 
     class Config:
         schema_extra = {
             "examples": {
                 "claude_general": {
-                    "summary": "🟢 Claude로 일반 대화",
+                    "summary": "🟢 Claude 일반 대화",
                     "description": "Claude-3-Haiku로 자유로운 대화 (기본 설정)",
                     "value": {
                         "prompt": "안녕? 파이썬 코딩 질문해도 돼?",
                         "use_claude": True,
-                        "use_gpt4o": False,
                         "session_id": "general-chat-001"
-                    }
-                },
-                "gpt_specific": {
-                    "summary": "🔵 GPT-4o-mini 직접 사용",
-                    "description": "GPT-4o-mini를 직접 지정해서 사용",
-                    "value": {
-                        "prompt": "창의적인 아이디어가 필요해",
-                        "use_claude": False,
-                        "use_gpt4o": True,
-                        "temperature": 0.8,
-                        "session_id": "creative-chat-001"
                     }
                 },
                 "keyword_training": {
                     "summary": "📚 전문 정보 질문",
                     "description": "훈련장려금, 출결 등 전문 DB 정보",
                     "value": {
-                "prompt": "훈련장려금은 언제 받을 수 있나요?",
+                        "prompt": "훈련장려금은 언제 받을 수 있나요?",
                         "use_claude": False,
-                        "use_gpt4o": False,
                         "session_id": "training-info-001"
                     }
                 },
-                "hybrid_auto": {
-                    "summary": "🚀 하이브리드 자동 선택",
-                    "description": "시스템이 자동으로 최적 AI 모델 선택",
+                "claude_enhanced": {
+                    "summary": "🚀 Claude + 키워드 하이브리드",
+                    "description": "Claude가 키워드 DB와 함께 정확한 답변 생성",
                     "value": {
                         "prompt": "안녕하세요! 출결 관리는 어떻게 하나요?",
                         "use_claude": True,
-                        "use_gpt4o": True,
                         "session_id": "hybrid-chat-001"
                     }
                 }
@@ -1638,50 +1397,7 @@ async def call_claude(user_prompt: str, max_tokens: int = 1000, temperature: flo
         logger.error(f"Claude API 호출 실패: {str(e)}")
         return None
 
-async def call_gpt4o_mini(prompt: str, max_tokens: int = 512, temperature: float = 0.6, context_data: List[dict] = None) -> str:
-    """GPT-4o-mini API를 호출하여 응답을 받습니다."""
-    
-    # 입력 검증
-    if not prompt or not prompt.strip():
-        return "입력이 비어있습니다."
-    
-    if not gpt_client:
-        return "GPT-4o-mini 클라이언트가 초기화되지 않았습니다. API 키를 확인해주세요."
-    
-    # 🎓 훈련 전문가로서 gpt-4o-mini 프롬프트 강화
-    system_context = """당신은 멋쟁이사자처럼 K-Digital Training 부트캠프의 전문 상담사입니다.
-
-📋 주요 분야별 정확한 정보:
-• 훈련장려금: 일일 15,800원, 80% 출석 필요, 단위기간별 지급 (2-3주 소요)
-• 출결관리: QR코드 필수, 지각/조퇴/외출 3회 = 결석 1회, HRD앱 사용
-• 공결신청: 병원진료(진단서 필요), 예비군, 경조사 등 인정, 질병공결은 10%까지
-• 줌수업: 9-18시 필수참여, 카메라 켜기 의무, 배경설정 필요
-• 수료조건: 전체 훈련일수 80% 이상 출석
-• 노트북: 개강 1주일내 신청, 반납시 원래 포장 필요
-
-친절하고 정확하게 답변하되, 규정에 관한 사항은 명확히 안내해주세요."""
-
-    enhanced_prompt = f"{system_context}\n\n질문: {prompt}"
-    
-    if context_data:
-        context_info = "\n\n관련 규정 참고:\n"
-        for i, ctx in enumerate(context_data[:3], 1):  # 상위 3개만
-            context_info += f"{i}. {ctx['question']}\n→ {ctx['answer'][:150]}{'...' if len(ctx['answer']) > 150 else ''}\n\n"
-        enhanced_prompt = f"{system_context}\n\n{context_info}질문: {prompt}\n\n위 관련 규정을 참고하여 정확하고 도움이 되는 답변을 해주세요."
-    
-    try:
-        logger.info("GPT-4o-mini API 호출 시작")
-        response = gpt_client.make_request(enhanced_prompt, max_tokens)
-        if response and len(response.strip()) > 5:
-            logger.info("GPT-4o-mini API 호출 성공")
-            return response
-        else:
-            logger.warning("GPT-4o-mini API 빈 응답")
-            return "죄송합니다. GPT-4o-mini에서 적절한 응답을 받지 못했습니다."
-            
-    except Exception as e:
-        logger.error(f"GPT-4o-mini API 호출 실패: {str(e)}")
-        return f"죄송합니다. GPT-4o-mini API 연결에 문제가 발생했습니다: {str(e)}"
+# call_gpt4o_mini 함수 제거됨 - Claude 전용 시스템으로 전환
     
 
 # === Google OAuth 인증 API (임시 비활성화) ===
