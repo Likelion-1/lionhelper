@@ -1397,6 +1397,76 @@ async def call_claude(user_prompt: str, max_tokens: int = 1000, temperature: flo
         logger.error(f"Claude API 호출 실패: {str(e)}")
         return None
 
+async def call_claude_with_knowledge(user_prompt: str, keyword_matches: List[dict] = None, max_tokens: int = 1000) -> Optional[str]:
+    """Claude가 키워드 DB 정보를 참고해서 지능적인 답변을 생성"""
+    if not claude_client:
+        logger.warning("Claude 클라이언트가 초기화되지 않았습니다")
+        return None
+    
+    try:
+        # 훈련 전문가로서의 시스템 컨텍스트
+        system_context = """당신은 멋쟁이사자처럼 K-Digital Training 부트캠프의 전문 AI 상담사입니다.
+
+🎯 주요 역할:
+- 훈련생들의 질문에 정확하고 친절하게 답변
+- 규정과 절차를 명확하게 안내
+- 복잡한 내용을 이해하기 쉽게 설명
+- 항상 도움이 되는 추가 정보나 팁 제공
+
+📋 주요 분야:
+• 훈련장려금: 일일 15,800원, 80% 출석률 필요, 단위기간별 지급
+• 출결관리: QR코드 체크, 지각/조퇴/외출 관리, HRD앱 사용
+• 공결신청: 병원, 예비군, 경조사 등 인정 사유
+• 온라인수업: 줌 참여 규정, 카메라 설정 등
+• 노트북 대여: 신청 절차, 관리 방법, 반납 규정
+• 수료 조건: 출석률, 평가 기준 등"""
+
+        if keyword_matches and len(keyword_matches) > 0:
+            # 키워드 매칭된 정보들을 참고 자료로 활용
+            reference_info = "\n\n📚 참고 정보:\n"
+            for i, match in enumerate(keyword_matches[:3], 1):  # 상위 3개만
+                reference_info += f"{i}. Q: {match['question']}\n"
+                reference_info += f"   A: {match['answer'][:200]}{'...' if len(match['answer']) > 200 else ''}\n\n"
+            
+            enhanced_prompt = f"""{system_context}
+
+{reference_info}위 참고 정보를 바탕으로 다음 질문에 정확하고 자연스럽게 답변해주세요:
+
+질문: {user_prompt}
+
+답변 가이드라인:
+1. 참고 정보의 핵심 내용을 포함하되, 기계적인 복사가 아닌 자연스러운 설명으로
+2. 추가적인 맥락이나 도움이 될 만한 정보가 있다면 함께 제공
+3. 규정이나 절차가 복잡하다면 단계별로 쉽게 설명
+4. 친근하면서도 전문적인 톤으로 답변"""
+        else:
+            # 키워드 매칭이 없는 경우 일반 대화
+            enhanced_prompt = f"""{system_context}
+
+다음 질문에 멋쟁이사자처럼 부트캠프 상담사로서 답변해주세요:
+
+질문: {user_prompt}
+
+답변 가이드라인:
+1. 친근하고 도움이 되는 톤으로 답변
+2. 부트캠프와 관련이 있다면 관련 정보나 안내 제공
+3. 일반적인 질문이라면 자연스럽게 대화
+4. 필요시 추가 질문을 유도하거나 도움 제안"""
+        
+        # Claude API 호출
+        response = claude_client.make_request(enhanced_prompt, max_tokens)
+        
+        if response:
+            logger.info("Claude 지식 기반 응답 생성 성공")
+            return response.strip()
+        else:
+            logger.warning("Claude 지식 기반 응답이 비어있습니다")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Claude 지식 기반 응답 실패: {str(e)}")
+        return None
+
 # call_gpt4o_mini 함수 제거됨 - Claude 전용 시스템으로 전환
     
 
@@ -1499,37 +1569,62 @@ async def chat_with_hybrid(request: ChatRequest):
         # 간단한 로깅 (선택적)
         logger.info(f"사용자 질문: {request.prompt}")
         
-        # 🚀 채팅 모드: Claude 모델 우선 사용
+        # 🚀 지능형 Claude 시스템: 키워드 DB + AI 하이브리드
         if request.use_claude:
-            logger.info("채팅 모드: Claude 모델 우선 사용")
+            logger.info("🧠 Claude 지능형 응답 시스템 시작")
             
-            # 질문 의도 분석
-            user_intent = analyze_question_intent(request.prompt)
-            logger.info(f"질문 의도 분석: {user_intent}")
+            # 1단계: 관련 키워드 정보 검색
+            related_data = find_related_questions_smart(
+                request.prompt, 
+                limit=5,
+                min_score=0.2,
+                context_keywords=[]
+            )
             
-            # 일반 대화인 경우 바로 Claude 사용
-            if user_intent.get("is_general_conversation", False):
-                logger.info("일반 대화 감지 - Claude 직접 사용")
-                try:
-                    ai_response = await call_claude(
-                        request.prompt, 
-                        request.max_new_tokens, 
-                        request.temperature,
-                        context_data=[]
+            # 2단계: Claude가 키워드 정보를 참고해서 지능적 답변 생성
+            try:
+                ai_response = await call_claude_with_knowledge(
+                    request.prompt,
+                    keyword_matches=related_data,
+                    max_tokens=request.max_new_tokens
+                )
+                
+                if ai_response and len(ai_response.strip()) > 10:
+                    # 관련 질문들 변환
+                    related_questions = []
+                    if related_data:
+                        for rq in related_data[:4]:
+                            related_questions.append(RelatedQuestion(
+                                id=str(rq.get("id", "unknown")),
+                                question=rq["question"],
+                                answer_preview=rq["answer"][:100] + "...",
+                                score=rq["score"],
+                                matched_keywords=rq.get("matched_keywords", [])
+                            ))
+                    
+                    # 📝 대화 기록 저장
+                    if request.session_id:
+                        try:
+                            save_message(request.session_id, "user", request.prompt)
+                            save_message(request.session_id, "assistant", ai_response, 
+                                       response_type="claude_enhanced", model_used="Claude-3-Haiku + Knowledge Base")
+                        except Exception as e:
+                            logger.warning(f"대화 기록 저장 실패: {str(e)}")
+                    
+                    logger.info("✅ Claude 지능형 응답 생성 성공")
+                    return ChatResponse(
+                        response=ai_response,
+                        model="Claude-3-Haiku + Knowledge Base",
+                        status="success",
+                        matched_keywords=[kw for item in related_data for kw in item.get("matched_keywords", [])][:5],
+                        response_type="claude_enhanced",
+                        related_questions=related_questions,
+                        total_related=len(related_data)
                     )
                     
-                    if ai_response and len(ai_response.strip()) > 5:
-                        return ChatResponse(
-                            response=ai_response,
-                            model="Claude-3-Haiku",
-                            status="success",
-                            matched_keywords=[],
-                            response_type="claude_chat",
-                            related_questions=None,
-                            total_related=0
-                        )
-                except Exception as e:
-                    logger.error(f"Claude 일반 대화 실패: {str(e)}")
+            except Exception as e:
+                logger.error(f"Claude 지능형 응답 실패: {str(e)}")
+                # Claude 실패 시 키워드 DB로 fallback
         
         # 🔄 GPT-4o-mini 모델 사용 (Claude 실패 시 또는 직접 사용)
         elif request.use_gpt4o:
