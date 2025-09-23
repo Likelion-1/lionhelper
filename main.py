@@ -1054,13 +1054,13 @@ def analyze_question_intent(user_input: str) -> dict:
         detected_topic = "일반대화"
         confidence = 0.0  # 키워드 매칭 점수를 낮춤
     else:
-    # 의도 분석
-    for intent, keywords in intent_patterns.items():
-        matches = sum(1 for keyword in keywords if keyword in input_lower)
-        if matches > 0:
-            detected_intent = intent
-            confidence += matches * 0.2
-            break
+        # 의도 분석
+        for intent, keywords in intent_patterns.items():
+            matches = sum(1 for keyword in keywords if keyword in input_lower)
+            if matches > 0:
+                detected_intent = intent
+                confidence += matches * 0.2
+                break
     
     # 주제 분석
     for topic, keywords in topic_categories.items():
@@ -1466,7 +1466,7 @@ async def call_claude_with_knowledge(user_prompt: str, keyword_matches: List[dic
             logger.warning("Claude 지식 기반 응답이 비어있습니다")
             return None
             
-        except Exception as e:
+    except Exception as e:
         logger.error(f"Claude 지식 기반 응답 실패: {str(e)}")
         return None
 
@@ -2003,7 +2003,7 @@ def health_check():
             # 간단한 연결 테스트
             test_result = claude_client.test_connection()
             claude_status = "connected" if test_result else "error"
-    except:
+        except:
             claude_status = "error"
     
     available_models = []
