@@ -9,3 +9,4 @@ python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 anthropic>=0.68.0
 tenacity==8.2.3
+slack-sdk>=3.37.0

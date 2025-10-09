@@ -7,9 +7,13 @@ import logging
 import sqlite3
 import requests
 import uvicorn
+import asyncio
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
+
+from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
 
 from anthropic import Anthropic
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -36,6 +40,11 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # Google OAuth 설정
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "your-google-client-id")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "your-google-client-secret")
+
+# 슬랙 API 설정
+SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
+SLACK_CHANNEL_ID = "C08M47TM2KH"  # 지정된 채널 ID
+slack_client = WebClient(token=SLACK_BOT_TOKEN) if SLACK_BOT_TOKEN else None
 
 # google_oauth = GoogleOAuth2(  # 임시 비활성화
 #     client_id=GOOGLE_CLIENT_ID,
@@ -220,6 +229,22 @@ def init_database():
             picture TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_login TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # 슬랙 이슈 테이블 생성
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS slack_issues (
+            id TEXT PRIMARY KEY,
+            project TEXT NOT NULL,
+            issue_type TEXT NOT NULL,
+            author TEXT NOT NULL,
+            content TEXT NOT NULL,
+            raw_message TEXT NOT NULL,
+            channel_id TEXT,
+            timestamp TEXT,
+            slack_ts TEXT UNIQUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     
@@ -710,6 +735,10 @@ POST /chat
         {
             "name": "Search",
             "description": "🔍 검색 엔진 - 관련 질문들을 점수순으로 검색하고 반환"
+        },
+        {
+            "name": "Slack",
+            "description": "🔔 슬랙 연동 - 슬랙 채널에서 이슈 메시지를 수집하고 관리"
         }
     ]
 )
@@ -1007,6 +1036,236 @@ class Message(BaseModel):
                 "model_used": None,
                 "created_at": "2024-01-15 10:30:00"
             }
+        }
+
+# 슬랙 관련 모델들
+class SlackIssue(BaseModel):
+    """슬랙 이슈 모델"""
+    id: str = Field(..., description="이슈 고유 ID")
+    project: str = Field(..., description="프로젝트/과정명")
+    issue_type: str = Field(..., description="이슈 유형")
+    author: str = Field(..., description="작성자")
+    content: str = Field(..., description="이슈 내용")
+    raw_message: str = Field(..., description="원본 메시지")
+    channel_id: Optional[str] = Field(None, description="채널 ID")
+    timestamp: Optional[str] = Field(None, description="타임스탬프")
+    slack_ts: Optional[str] = Field(None, description="슬랙 타임스탬프")
+    created_at: str = Field(..., description="생성 시간")
+
+class SlackSyncRequest(BaseModel):
+    """슬랙 동기화 요청 모델"""
+    hours: Optional[int] = Field(24, description="동기화할 시간 범위 (시간)", example=24)
+    force: Optional[bool] = Field(False, description="강제 동기화 여부", example=False)
+
+# 슬랙 관련 함수들
+def parse_slack_issue_message(text: str) -> Optional[Dict[str, str]]:
+    """슬랙 메시지에서 이슈 정보를 파싱합니다."""
+    import re
+    
+    # 이슈 알림 메시지인지 확인
+    if not any(keyword in text for keyword in ["등록되었습니다", "새로운 이슈가", "이슈가 등록"]):
+        return None
+    
+    # 기본 정보 추출
+    issue_data = {}
+    
+    # 과정/프로젝트 추출
+    project_match = re.search(r'과정[:：]\s*([^\n]+)', text)
+    if project_match:
+        issue_data['project'] = project_match.group(1).strip()
+    
+    # 내용 추출
+    content_match = re.search(r'내용[:：]\s*([^\n]+)', text)
+    if content_match:
+        issue_data['content'] = content_match.group(1).strip()
+    
+    # 작성자 추출
+    author_match = re.search(r'작성자[:：]\s*([^\n]+)', text)
+    if author_match:
+        issue_data['author'] = author_match.group(1).strip()
+    
+    # 이슈 유형 분류
+    issue_type = "일반"
+    if any(keyword in text for keyword in ["프론트엔드", "frontend", "Front-end"]):
+        issue_type = "프론트엔드"
+    elif any(keyword in text for keyword in ["백엔드", "backend", "Back-end"]):
+        issue_type = "백엔드"
+    elif any(keyword in text for keyword in ["훈련장려금", "장려금"]):
+        issue_type = "훈련장려금"
+    elif any(keyword in text for keyword in ["환경설정", "설정", "환경"]):
+        issue_type = "환경설정"
+    
+    issue_data['issue_type'] = issue_type
+    
+    # 필수 필드가 있는지 확인
+    if not all(key in issue_data for key in ['project', 'content', 'author']):
+        return None
+    
+    return issue_data
+
+def save_slack_issue(issue_data: Dict[str, str], raw_message: str, channel_id: str = None, timestamp: str = None, slack_ts: str = None) -> str:
+    """파싱된 슬랙 이슈를 데이터베이스에 저장합니다."""
+    conn = sqlite3.connect('chat_history.db')
+    cursor = conn.cursor()
+    
+    issue_id = str(uuid.uuid4())
+    
+    try:
+        cursor.execute('''
+            INSERT INTO slack_issues (id, project, issue_type, author, content, raw_message, channel_id, timestamp, slack_ts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            issue_id,
+            issue_data['project'],
+            issue_data['issue_type'],
+            issue_data['author'],
+            issue_data['content'],
+            raw_message,
+            channel_id,
+            timestamp,
+            slack_ts
+        ))
+        
+        conn.commit()
+        logger.info(f"슬랙 이슈 저장 완료: {issue_id}")
+        return issue_id
+        
+    except sqlite3.IntegrityError as e:
+        if "UNIQUE constraint failed" in str(e):
+            logger.info(f"이미 존재하는 슬랙 메시지: {slack_ts}")
+            return None
+        raise
+    finally:
+        conn.close()
+
+def get_slack_issues(limit: int = 50, project: str = None) -> List[SlackIssue]:
+    """저장된 슬랙 이슈들을 조회합니다."""
+    conn = sqlite3.connect('chat_history.db')
+    cursor = conn.cursor()
+    
+    try:
+        if project:
+            cursor.execute('''
+                SELECT id, project, issue_type, author, content, raw_message, channel_id, timestamp, slack_ts, created_at
+                FROM slack_issues 
+                WHERE project LIKE ?
+                ORDER BY created_at DESC 
+                LIMIT ?
+            ''', (f'%{project}%', limit))
+        else:
+            cursor.execute('''
+                SELECT id, project, issue_type, author, content, raw_message, channel_id, timestamp, slack_ts, created_at
+                FROM slack_issues 
+                ORDER BY created_at DESC 
+                LIMIT ?
+            ''', (limit,))
+        
+        rows = cursor.fetchall()
+        issues = []
+        
+        for row in rows:
+            issues.append(SlackIssue(
+                id=row[0],
+                project=row[1],
+                issue_type=row[2],
+                author=row[3],
+                content=row[4],
+                raw_message=row[5],
+                channel_id=row[6],
+                timestamp=row[7],
+                slack_ts=row[8],
+                created_at=row[9]
+            ))
+        
+        return issues
+        
+    finally:
+        conn.close()
+
+async def fetch_slack_messages(hours: int = 24) -> List[Dict[str, Any]]:
+    """슬랙 채널에서 메시지를 가져옵니다."""
+    if not slack_client:
+        raise HTTPException(status_code=500, detail="슬랙 봇 토큰이 설정되지 않았습니다")
+    
+    try:
+        # 지정된 시간 이전의 타임스탬프 계산
+        oldest_time = time.time() - (hours * 3600)
+        
+        # 채널 메시지 가져오기
+        response = slack_client.conversations_history(
+            channel=SLACK_CHANNEL_ID,
+            oldest=str(oldest_time),
+            limit=100
+        )
+        
+        if not response["ok"]:
+            raise HTTPException(status_code=500, detail=f"슬랙 API 오류: {response.get('error', 'Unknown error')}")
+        
+        return response["messages"]
+        
+    except SlackApiError as e:
+        logger.error(f"슬랙 API 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"슬랙 API 오류: {e}")
+
+async def sync_slack_issues(hours: int = 24, force: bool = False) -> Dict[str, Any]:
+    """슬랙 채널에서 이슈 메시지를 동기화합니다."""
+    try:
+        messages = await fetch_slack_messages(hours)
+        
+        new_issues = 0
+        skipped_issues = 0
+        errors = 0
+        
+        for message in messages:
+            # 봇 메시지나 편집된 메시지는 무시
+            if message.get("bot_id") or message.get("subtype") == "message_changed":
+                continue
+            
+            text = message.get("text", "")
+            slack_ts = message.get("ts")
+            
+            # 이슈 메시지인지 파싱 시도
+            issue_data = parse_slack_issue_message(text)
+            if not issue_data:
+                continue
+            
+            try:
+                # 데이터베이스에 저장
+                issue_id = save_slack_issue(
+                    issue_data=issue_data,
+                    raw_message=text,
+                    channel_id=SLACK_CHANNEL_ID,
+                    timestamp=message.get("ts"),
+                    slack_ts=slack_ts
+                )
+                
+                if issue_id:
+                    new_issues += 1
+                    logger.info(f"새로운 이슈 저장: {issue_data['project']} - {issue_data['content'][:50]}...")
+                else:
+                    skipped_issues += 1
+                    
+            except Exception as e:
+                logger.error(f"이슈 저장 중 오류: {e}")
+                errors += 1
+        
+        return {
+            "success": True,
+            "message": f"동기화 완료: 새로운 이슈 {new_issues}개, 건너뛴 이슈 {skipped_issues}개, 오류 {errors}개",
+            "new_issues": new_issues,
+            "skipped_issues": skipped_issues,
+            "errors": errors,
+            "total_messages": len(messages)
+        }
+        
+    except Exception as e:
+        logger.error(f"슬랙 동기화 오류: {e}")
+        return {
+            "success": False,
+            "message": f"동기화 실패: {str(e)}",
+            "new_issues": 0,
+            "skipped_issues": 0,
+            "errors": 1
         }
 
 def analyze_question_intent(user_input: str) -> dict:
@@ -1470,11 +1729,6 @@ async def call_claude_with_knowledge(user_prompt: str, keyword_matches: List[dic
         logger.error(f"Claude 지식 기반 응답 실패: {str(e)}")
         return None
 
-# call_gpt4o_mini 함수 제거됨 - Claude 전용 시스템으로 전환
-    
-
-# === Google OAuth 인증 API (임시 비활성화) ===
-# OAuth 관련 기능은 authlib 버전 문제로 임시 비활성화
 
 @app.get(
     "/",
@@ -2471,6 +2725,172 @@ def get_session_info(session_id: str):
         if session.id == session_id:
             return session
     raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+
+# 슬랙 관련 엔드포인트들
+@app.post(
+    "/slack/sync",
+    summary="🔄 슬랙 이슈 동기화",
+    description="슬랙 채널에서 이슈 메시지를 가져와서 데이터베이스에 저장합니다.",
+    response_description="동기화 결과",
+    tags=["Slack"]
+)
+async def sync_slack_issues_endpoint(request: SlackSyncRequest):
+    """
+    ## 🔄 슬랙 이슈 동기화
+    
+    지정된 슬랙 채널에서 이슈 알림 메시지를 가져와서 데이터베이스에 저장합니다.
+    
+    ### 📝 요청 데이터
+    - **hours**: 동기화할 시간 범위 (기본값: 24시간)
+    - **force**: 강제 동기화 여부 (기본값: false)
+    
+    ### 📋 응답 데이터
+    - **success**: 동기화 성공 여부
+    - **message**: 결과 메시지
+    - **new_issues**: 새로 추가된 이슈 수
+    - **skipped_issues**: 건너뛴 이슈 수 (중복)
+    - **errors**: 오류 발생 수
+    - **total_messages**: 처리된 총 메시지 수
+    
+    ### 💡 활용 방법
+    - 정기적으로 호출하여 새로운 이슈 수집
+    - 중복 데이터는 자동으로 건너뜀
+    - 파싱 가능한 이슈 메시지만 저장
+    """
+    if not SLACK_BOT_TOKEN:
+        raise HTTPException(status_code=500, detail="슬랙 봇 토큰이 설정되지 않았습니다. SLACK_BOT_TOKEN 환경변수를 설정해주세요.")
+    
+    result = await sync_slack_issues(request.hours, request.force)
+    return result
+
+@app.get(
+    "/slack/issues",
+    response_model=List[SlackIssue],
+    summary="📋 슬랙 이슈 목록 조회",
+    description="저장된 슬랙 이슈들을 조회합니다.",
+    response_description="슬랙 이슈 목록",
+    tags=["Slack"]
+)
+def list_slack_issues_endpoint(
+    limit: Optional[int] = 50,
+    project: Optional[str] = None
+):
+    """
+    ## 📋 슬랙 이슈 목록 조회
+    
+    데이터베이스에 저장된 슬랙 이슈들을 조회합니다.
+    
+    ### 🔍 쿼리 매개변수
+    - **limit**: 조회할 최대 이슈 수 (기본값: 50)
+    - **project**: 프로젝트명으로 필터링 (선택)
+    
+    ### 📋 응답 데이터
+    각 이슈는 다음 정보를 포함합니다:
+    - **id**: 이슈 고유 ID
+    - **project**: 프로젝트/과정명
+    - **issue_type**: 이슈 유형 (프론트엔드, 백엔드, 훈련장려금 등)
+    - **author**: 작성자
+    - **content**: 이슈 내용
+    - **raw_message**: 원본 슬랙 메시지
+    - **created_at**: 저장 시간
+    
+    ### 💡 활용 방법
+    - 최근 이슈 현황 파악
+    - 프로젝트별 이슈 필터링
+    - 이슈 통계 및 분석
+    """
+    return get_slack_issues(limit=limit, project=project)
+
+@app.get(
+    "/slack/issues/stats",
+    summary="📊 슬랙 이슈 통계",
+    description="저장된 슬랙 이슈들의 통계 정보를 제공합니다.",
+    response_description="이슈 통계 정보",
+    tags=["Slack"]
+)
+def get_slack_issue_stats():
+    """
+    ## 📊 슬랙 이슈 통계
+    
+    저장된 슬랙 이슈들의 다양한 통계 정보를 제공합니다.
+    
+    ### 📋 응답 데이터
+    - **total_issues**: 총 이슈 수
+    - **by_project**: 프로젝트별 이슈 수
+    - **by_type**: 이슈 유형별 수
+    - **by_author**: 작성자별 이슈 수
+    - **recent_issues**: 최근 이슈들 (최대 10개)
+    
+    ### 💡 활용 방법
+    - 이슈 현황 대시보드
+    - 프로젝트별 이슈 분포 파악
+    - 작성자별 활동 분석
+    """
+    conn = sqlite3.connect('chat_history.db')
+    cursor = conn.cursor()
+    
+    try:
+        # 총 이슈 수
+        cursor.execute("SELECT COUNT(*) FROM slack_issues")
+        total_issues = cursor.fetchone()[0]
+        
+        # 프로젝트별 통계
+        cursor.execute("""
+            SELECT project, COUNT(*) as count 
+            FROM slack_issues 
+            GROUP BY project 
+            ORDER BY count DESC
+        """)
+        by_project = dict(cursor.fetchall())
+        
+        # 이슈 유형별 통계
+        cursor.execute("""
+            SELECT issue_type, COUNT(*) as count 
+            FROM slack_issues 
+            GROUP BY issue_type 
+            ORDER BY count DESC
+        """)
+        by_type = dict(cursor.fetchall())
+        
+        # 작성자별 통계
+        cursor.execute("""
+            SELECT author, COUNT(*) as count 
+            FROM slack_issues 
+            GROUP BY author 
+            ORDER BY count DESC 
+            LIMIT 10
+        """)
+        by_author = dict(cursor.fetchall())
+        
+        # 최근 이슈들
+        cursor.execute("""
+            SELECT project, issue_type, author, content, created_at
+            FROM slack_issues 
+            ORDER BY created_at DESC 
+            LIMIT 10
+        """)
+        recent_rows = cursor.fetchall()
+        recent_issues = [
+            {
+                "project": row[0],
+                "issue_type": row[1],
+                "author": row[2],
+                "content": row[3][:100] + "..." if len(row[3]) > 100 else row[3],
+                "created_at": row[4]
+            }
+            for row in recent_rows
+        ]
+        
+        return {
+            "total_issues": total_issues,
+            "by_project": by_project,
+            "by_type": by_type,
+            "by_author": by_author,
+            "recent_issues": recent_issues
+        }
+        
+    finally:
+        conn.close()
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8001))
