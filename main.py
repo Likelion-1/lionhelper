@@ -8,6 +8,7 @@ import sqlite3
 import requests
 import uvicorn
 import asyncio
+import re
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from typing import Optional, List, Dict, Any
@@ -244,6 +245,35 @@ def init_database():
             channel_id TEXT,
             timestamp TEXT,
             slack_ts TEXT UNIQUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # 답변 피드백 테이블 생성
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS answer_feedback (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            user_question TEXT NOT NULL,
+            ai_answer TEXT NOT NULL,
+            feedback_type TEXT NOT NULL, -- 'positive', 'negative', 'correction'
+            feedback_content TEXT,
+            user_correction TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (session_id) REFERENCES sessions (id),
+            FOREIGN KEY (message_id) REFERENCES messages (id)
+        )
+    ''')
+    
+    # 답변 개선 로그 테이블 생성
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS improvement_logs (
+            id TEXT PRIMARY KEY,
+            issue_type TEXT NOT NULL,
+            original_answer TEXT NOT NULL,
+            improved_answer TEXT NOT NULL,
+            improvement_reason TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -739,6 +769,10 @@ POST /chat
         {
             "name": "Slack",
             "description": "🔔 슬랙 연동 - 슬랙 채널에서 이슈 메시지를 수집하고 관리"
+        },
+        {
+            "name": "Feedback",
+            "description": "📝 피드백 시스템 - 답변 품질 개선을 위한 사용자 피드백 수집 및 분석"
         }
     ]
 )
@@ -1057,11 +1091,24 @@ class SlackSyncRequest(BaseModel):
     hours: Optional[int] = Field(24, description="동기화할 시간 범위 (시간)", example=24)
     force: Optional[bool] = Field(False, description="강제 동기화 여부", example=False)
 
+class FeedbackRequest(BaseModel):
+    """답변 피드백 요청 모델"""
+    session_id: str = Field(..., description="세션 ID")
+    message_id: str = Field(..., description="메시지 ID")
+    feedback_type: str = Field(..., description="피드백 유형", example="negative")
+    feedback_content: Optional[str] = Field(None, description="피드백 내용")
+    user_correction: Optional[str] = Field(None, description="사용자 수정 내용")
+
+class ImprovementSuggestion(BaseModel):
+    """답변 개선 제안 모델"""
+    issue_type: str = Field(..., description="이슈 유형")
+    current_answer: str = Field(..., description="현재 답변")
+    suggested_answer: str = Field(..., description="개선된 답변")
+    improvement_reason: str = Field(..., description="개선 이유")
+
 # 슬랙 관련 함수들
 def parse_slack_issue_message(text: str) -> Optional[Dict[str, str]]:
     """슬랙 메시지에서 이슈 정보를 파싱합니다."""
-    import re
-    
     # 이슈 알림 메시지인지 확인
     if not any(keyword in text for keyword in ["등록되었습니다", "새로운 이슈가", "이슈가 등록"]):
         return None
@@ -1267,6 +1314,115 @@ async def sync_slack_issues(hours: int = 24, force: bool = False) -> Dict[str, A
             "skipped_issues": 0,
             "errors": 1
         }
+
+def save_answer_feedback(session_id: str, message_id: str, user_question: str, ai_answer: str, 
+                        feedback_type: str, feedback_content: str = None, user_correction: str = None) -> bool:
+    """답변 피드백을 데이터베이스에 저장합니다."""
+    try:
+        conn = sqlite3.connect('chat_history.db')
+        cursor = conn.cursor()
+        
+        feedback_id = str(uuid.uuid4())
+        cursor.execute('''
+            INSERT INTO answer_feedback 
+            (id, session_id, message_id, user_question, ai_answer, feedback_type, feedback_content, user_correction)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (feedback_id, session_id, message_id, user_question, ai_answer, feedback_type, feedback_content, user_correction))
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logging.error(f"피드백 저장 오류: {e}")
+        return False
+
+def analyze_feedback_patterns() -> Dict[str, Any]:
+    """피드백 패턴을 분석하여 개선점을 찾습니다."""
+    try:
+        conn = sqlite3.connect('chat_history.db')
+        cursor = conn.cursor()
+        
+        # 부정적 피드백이 많은 질문 유형 분석
+        cursor.execute('''
+            SELECT user_question, COUNT(*) as negative_count
+            FROM answer_feedback 
+            WHERE feedback_type = 'negative'
+            GROUP BY user_question
+            ORDER BY negative_count DESC
+            LIMIT 10
+        ''')
+        problematic_questions = cursor.fetchall()
+        
+        # 자주 수정되는 답변 패턴 분석
+        cursor.execute('''
+            SELECT user_correction, COUNT(*) as correction_count
+            FROM answer_feedback 
+            WHERE feedback_type = 'correction' AND user_correction IS NOT NULL
+            GROUP BY user_correction
+            ORDER BY correction_count DESC
+            LIMIT 10
+        ''')
+        common_corrections = cursor.fetchall()
+        
+        # 전체 피드백 통계
+        cursor.execute('''
+            SELECT feedback_type, COUNT(*) as count
+            FROM answer_feedback
+            GROUP BY feedback_type
+        ''')
+        feedback_stats = cursor.fetchall()
+        
+        conn.close()
+        
+        return {
+            "problematic_questions": [{"question": q[0], "count": q[1]} for q in problematic_questions],
+            "common_corrections": [{"correction": c[0], "count": c[1]} for c in common_corrections],
+            "feedback_stats": [{"type": f[0], "count": f[1]} for f in feedback_stats]
+        }
+    except Exception as e:
+        logging.error(f"피드백 분석 오류: {e}")
+        return {}
+
+def get_improvement_suggestions_from_issues() -> List[Dict[str, str]]:
+    """슬랙 이슈 데이터를 기반으로 답변 개선 제안을 생성합니다."""
+    try:
+        conn = sqlite3.connect('chat_history.db')
+        cursor = conn.cursor()
+        
+        # 최근 이슈들 가져오기
+        cursor.execute('''
+            SELECT project, issue_type, content, author
+            FROM slack_issues
+            ORDER BY created_at DESC
+            LIMIT 20
+        ''')
+        recent_issues = cursor.fetchall()
+        
+        suggestions = []
+        for issue in recent_issues:
+            project, issue_type, content, author = issue
+            
+            # 이슈 유형별 개선 제안 생성
+            if "정확도" in content or "틀린" in content or "잘못" in content:
+                suggestions.append({
+                    "issue_type": "답변 정확도",
+                    "description": f"{project}에서 {issue_type} 관련 정확도 문제 발생",
+                    "suggestion": "해당 분야의 QA 데이터베이스 업데이트 및 검증 강화 필요",
+                    "priority": "high"
+                })
+            elif "느린" in content or "속도" in content:
+                suggestions.append({
+                    "issue_type": "응답 속도",
+                    "description": f"{project}에서 응답 속도 문제 발생",
+                    "suggestion": "캐싱 시스템 개선 및 응답 최적화 필요",
+                    "priority": "medium"
+                })
+        
+        conn.close()
+        return suggestions
+    except Exception as e:
+        logging.error(f"개선 제안 생성 오류: {e}")
+        return []
 
 def analyze_question_intent(user_input: str) -> dict:
     """질문의 의도를 분석하여 카테고리와 유형을 반환합니다."""
@@ -2891,6 +3047,161 @@ def get_slack_issue_stats():
         
     finally:
         conn.close()
+
+# 피드백 및 개선 관련 엔드포인트들
+@app.post(
+    "/feedback",
+    summary="📝 답변 피드백 제출",
+    description="AI 답변에 대한 사용자 피드백을 수집합니다.",
+    response_description="피드백 저장 결과",
+    tags=["Feedback"]
+)
+async def submit_feedback(request: FeedbackRequest):
+    """
+    ## 📝 답변 피드백 제출
+    
+    AI 답변에 대한 사용자 피드백을 수집하여 답변 품질 개선에 활용합니다.
+    
+    ### 📝 요청 데이터
+    - **session_id**: 세션 ID
+    - **message_id**: 메시지 ID
+    - **feedback_type**: 피드백 유형 (positive, negative, correction)
+    - **feedback_content**: 피드백 내용 (선택사항)
+    - **user_correction**: 사용자 수정 내용 (correction 타입일 때)
+    
+    ### 📋 응답 데이터
+    - **success**: 저장 성공 여부
+    - **message**: 결과 메시지
+    """
+    try:
+        # 해당 메시지 정보 가져오기
+        conn = sqlite3.connect('chat_history.db')
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT content FROM messages 
+            WHERE id = ? AND session_id = ?
+        ''', (request.message_id, request.session_id))
+        
+        message_result = cursor.fetchone()
+        if not message_result:
+            conn.close()
+            raise HTTPException(status_code=404, detail="메시지를 찾을 수 없습니다.")
+        
+        # 사용자 질문과 AI 답변 구분 (간단한 방식)
+        ai_answer = message_result[0]
+        
+        # 이전 사용자 메시지 찾기
+        cursor.execute('''
+            SELECT content FROM messages 
+            WHERE session_id = ? AND role = 'user'
+            ORDER BY created_at DESC
+            LIMIT 1
+        ''', (request.session_id,))
+        
+        user_question_result = cursor.fetchone()
+        user_question = user_question_result[0] if user_question_result else "질문을 찾을 수 없음"
+        
+        conn.close()
+        
+        # 피드백 저장
+        success = save_answer_feedback(
+            session_id=request.session_id,
+            message_id=request.message_id,
+            user_question=user_question,
+            ai_answer=ai_answer,
+            feedback_type=request.feedback_type,
+            feedback_content=request.feedback_content,
+            user_correction=request.user_correction
+        )
+        
+        if success:
+            return {
+                "success": True,
+                "message": "피드백이 성공적으로 저장되었습니다."
+            }
+        else:
+            raise HTTPException(status_code=500, detail="피드백 저장에 실패했습니다.")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"피드백 처리 오류: {str(e)}")
+
+@app.get(
+    "/feedback/analysis",
+    summary="📊 피드백 분석 결과",
+    description="수집된 피드백을 분석하여 개선점을 제시합니다.",
+    response_description="피드백 분석 결과",
+    tags=["Feedback"]
+)
+def get_feedback_analysis():
+    """
+    ## 📊 피드백 분석 결과
+    
+    수집된 사용자 피드백을 분석하여 답변 품질 개선점을 제시합니다.
+    
+    ### 📋 응답 데이터
+    - **problematic_questions**: 부정적 피드백이 많은 질문들
+    - **common_corrections**: 자주 수정되는 답변 패턴들
+    - **feedback_stats**: 전체 피드백 통계
+    """
+    try:
+        analysis_result = analyze_feedback_patterns()
+        return {
+            "success": True,
+            "data": analysis_result
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"피드백 분석 오류: {str(e)}")
+
+@app.get(
+    "/improvement/suggestions",
+    summary="💡 답변 개선 제안",
+    description="슬랙 이슈와 피드백을 기반으로 답변 개선 제안을 생성합니다.",
+    response_description="개선 제안 목록",
+    tags=["Feedback"]
+)
+def get_improvement_suggestions():
+    """
+    ## 💡 답변 개선 제안
+    
+    슬랙 이슈 데이터와 사용자 피드백을 분석하여 답변 품질 개선 제안을 생성합니다.
+    
+    ### 📋 응답 데이터
+    - **suggestions**: 개선 제안 목록
+    - **priority_issues**: 우선순위가 높은 이슈들
+    - **improvement_areas**: 개선이 필요한 영역들
+    """
+    try:
+        # 슬랙 이슈 기반 제안
+        issue_suggestions = get_improvement_suggestions_from_issues()
+        
+        # 피드백 기반 분석
+        feedback_analysis = analyze_feedback_patterns()
+        
+        # 우선순위 이슈 식별
+        priority_issues = [s for s in issue_suggestions if s.get("priority") == "high"]
+        
+        # 개선 영역 분류
+        improvement_areas = {}
+        for suggestion in issue_suggestions:
+            area = suggestion.get("issue_type", "기타")
+            if area not in improvement_areas:
+                improvement_areas[area] = []
+            improvement_areas[area].append(suggestion)
+        
+        return {
+            "success": True,
+            "data": {
+                "suggestions": issue_suggestions,
+                "priority_issues": priority_issues,
+                "improvement_areas": improvement_areas,
+                "feedback_analysis": feedback_analysis
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"개선 제안 생성 오류: {str(e)}")
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8001))
