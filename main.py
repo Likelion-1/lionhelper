@@ -1109,8 +1109,8 @@ class ImprovementSuggestion(BaseModel):
 # 슬랙 관련 함수들
 def parse_slack_issue_message(text: str) -> Optional[Dict[str, str]]:
     """슬랙 메시지에서 이슈 정보를 파싱합니다."""
-    # 이슈 알림 메시지인지 확인
-    if not any(keyword in text for keyword in ["등록되었습니다", "새로운 이슈가", "이슈가 등록"]):
+    # 멘션 태그가 포함된 메시지인지 확인 (@here, @everyone, @channel)
+    if not any(mention in text for mention in ["<@here>", "<@everyone>", "<@channel>" ,"<!here>", "<!everyone>", "<!channel>"]):
         return None
     
     # 기본 정보 추출
