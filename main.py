@@ -1275,6 +1275,9 @@ def get_slack_issues(limit: int = 50, project: str = None) -> List[SlackIssue]:
         issues = []
         
         for row in rows:
+            # created_at을 문자열로 변환
+            created_at_str = row[9].isoformat() if hasattr(row[9], 'isoformat') else str(row[9])
+            
             issues.append(SlackIssue(
                 id=row[0],
                 project=row[1],
@@ -1285,7 +1288,7 @@ def get_slack_issues(limit: int = 50, project: str = None) -> List[SlackIssue]:
                 channel_id=row[6],
                 timestamp=row[7],
                 slack_ts=row[8],
-                created_at=row[9]
+                created_at=created_at_str
             ))
         
         return issues
