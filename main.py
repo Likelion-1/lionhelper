@@ -1298,7 +1298,8 @@ async def fetch_slack_messages(hours: int = 24) -> List[Dict[str, Any]]:
         
     except SlackApiError as e:
         logger.error(f"슬랙 API 오류: {e}")
-        raise HTTPException(status_code=500, detail=f"슬랙 API 오류: {e}")
+        error_detail = f"슬랙 API 오류: {e.response['error'] if hasattr(e, 'response') and e.response else str(e)}"
+        raise HTTPException(status_code=500, detail=error_detail)
 
 async def sync_slack_issues(hours: int = 24, force: bool = False) -> Dict[str, Any]:
     """슬랙 채널에서 이슈 메시지를 동기화합니다."""
