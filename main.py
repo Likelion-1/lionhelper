@@ -1162,38 +1162,56 @@ def parse_slack_issue_message(text: str) -> Optional[Dict[str, str]]:
     # 기본 정보 추출
     issue_data = {}
     
-    # 과정/프로젝트 추출
+    # 과정/프로젝트 추출 (정형화된 양식이 있으면 사용, 없으면 기본값)
     project_match = re.search(r'과정[:：]\s*([^\n]+)', text)
     if project_match:
         issue_data['project'] = project_match.group(1).strip()
+    else:
+        # 정형화된 양식이 없으면 메시지에서 키워드 기반으로 프로젝트 추정
+        if any(keyword in text for keyword in ["프론트엔드", "frontend", "Front-end", "React", "Vue", "Angular"]):
+            issue_data['project'] = "프론트엔드 관련"
+        elif any(keyword in text for keyword in ["백엔드", "backend", "Back-end", "Django", "Spring", "Node.js"]):
+            issue_data['project'] = "백엔드 관련"
+        elif any(keyword in text for keyword in ["훈련장려금", "장려금", "출결", "공결"]):
+            issue_data['project'] = "행정 관련"
+        else:
+            issue_data['project'] = "일반 공지"
     
-    # 내용 추출
+    # 내용 추출 (정형화된 양식이 있으면 사용, 없으면 전체 메시지)
     content_match = re.search(r'내용[:：]\s*([^\n]+)', text)
     if content_match:
         issue_data['content'] = content_match.group(1).strip()
+    else:
+        # 멘션 태그를 제거하고 메시지 내용만 추출
+        content = re.sub(r'<@[^>]+>', '', text).strip()
+        content = re.sub(r'<!here>|<!everyone>|<!channel>', '', content).strip()
+        issue_data['content'] = content if content else "멘션 메시지"
     
-    # 작성자 추출
+    # 작성자 추출 (정형화된 양식이 있으면 사용, 없으면 기본값)
     author_match = re.search(r'작성자[:：]\s*([^\n]+)', text)
     if author_match:
         issue_data['author'] = author_match.group(1).strip()
+    else:
+        issue_data['author'] = "행정 담당자"
     
     # 이슈 유형 분류
     issue_type = "일반"
-    if any(keyword in text for keyword in ["프론트엔드", "frontend", "Front-end"]):
+    if any(keyword in text for keyword in ["프론트엔드", "frontend", "Front-end", "React", "Vue", "Angular"]):
         issue_type = "프론트엔드"
-    elif any(keyword in text for keyword in ["백엔드", "backend", "Back-end"]):
+    elif any(keyword in text for keyword in ["백엔드", "backend", "Back-end", "Django", "Spring", "Node.js"]):
         issue_type = "백엔드"
     elif any(keyword in text for keyword in ["훈련장려금", "장려금"]):
         issue_type = "훈련장려금"
     elif any(keyword in text for keyword in ["환경설정", "설정", "환경"]):
         issue_type = "환경설정"
+    elif any(keyword in text for keyword in ["출결", "공결", "지각", "조퇴", "결석"]):
+        issue_type = "출결관리"
+    elif any(keyword in text for keyword in ["공지", "안내", "알림"]):
+        issue_type = "공지사항"
     
     issue_data['issue_type'] = issue_type
     
-    # 필수 필드가 있는지 확인
-    if not all(key in issue_data for key in ['project', 'content', 'author']):
-        return None
-    
+    # 멘션 태그가 있으면 무조건 저장 (정형화된 양식 불필요)
     return issue_data
 
 def save_slack_issue(issue_data: Dict[str, str], raw_message: str, channel_id: str = None, timestamp: str = None, slack_ts: str = None) -> str:
