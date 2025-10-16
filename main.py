@@ -4,7 +4,8 @@ import time
 import json
 import uuid
 import logging
-import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
 import requests
 import uvicorn
 import asyncio
@@ -75,30 +76,30 @@ def verify_token(token: str):
 # 사용자 관련 함수들
 def get_user_by_email(email: str):
     """이메일로 사용자 조회"""
-    conn = sqlite3.connect('chat_history.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('SELECT * FROM users WHERE email = ?', (email,))
+    cursor.execute('SELECT * FROM users WHERE email = %s', (email,))
     user = cursor.fetchone()
     conn.close()
     return user
 
 def create_user(user_data: dict):
     """새 사용자 생성"""
-    conn = sqlite3.connect('chat_history.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         INSERT INTO users (id, email, name, picture)
-        VALUES (?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s)
     ''', (user_data['id'], user_data['email'], user_data['name'], user_data.get('picture')))
     conn.commit()
     conn.close()
 
 def update_user_login(user_id: str):
     """사용자 마지막 로그인 시간 업데이트"""
-    conn = sqlite3.connect('chat_history.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
-        UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?
+        UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = %s
     ''', (user_id,))
     conn.commit()
     conn.close()
@@ -121,6 +122,31 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
 # Anthropic Claude API 설정
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 USE_CLAUDE = os.getenv("USE_CLAUDE", "true").lower() == "true"
+
+# PostgreSQL 데이터베이스 설정
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://username:password@localhost:5432/chat_history")
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = os.getenv("DB_PORT", "5432")
+DB_NAME = os.getenv("DB_NAME", "chat_history")
+DB_USER = os.getenv("DB_USER", "username")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "password")
+
+def get_db_connection():
+    """PostgreSQL 데이터베이스 연결 함수"""
+    try:
+        if DATABASE_URL and DATABASE_URL != "postgresql://username:password@localhost:5432/chat_history":
+            return psycopg2.connect(DATABASE_URL)
+        else:
+            return psycopg2.connect(
+                host=DB_HOST,
+                port=DB_PORT,
+                database=DB_NAME,
+                user=DB_USER,
+                password=DB_PASSWORD
+            )
+    except psycopg2.Error as e:
+        logger.error(f"데이터베이스 연결 오류: {e}")
+        raise
 
 # GPTAPIClient 클래스 제거됨 - Claude 전용 시스템으로 전환
 
@@ -193,93 +219,101 @@ if ANTHROPIC_API_KEY:
 
 # 데이터베이스 초기화
 def init_database():
-    """SQLite 데이터베이스 초기화"""
-    conn = sqlite3.connect('chat_history.db')
+    """PostgreSQL 데이터베이스 초기화"""
+    conn = get_db_connection()
     cursor = conn.cursor()
     
-    # 세션 테이블
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS sessions (
-            id TEXT PRIMARY KEY,
-            title TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
+    try:
+        # 세션 테이블
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS sessions (
+                id VARCHAR(255) PRIMARY KEY,
+                title VARCHAR(500) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # 메시지 테이블
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS messages (
+                id VARCHAR(255) PRIMARY KEY,
+                session_id VARCHAR(255) NOT NULL,
+                role VARCHAR(50) NOT NULL,
+                content TEXT NOT NULL,
+                response_type VARCHAR(100),
+                model_used VARCHAR(100),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (session_id) REFERENCES sessions (id)
+            )
+        ''')
+        
+        # 사용자 테이블 생성
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id VARCHAR(255) PRIMARY KEY,
+                email VARCHAR(255) UNIQUE NOT NULL,
+                name VARCHAR(255) NOT NULL,
+                picture TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_login TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # 슬랙 이슈 테이블 생성
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS slack_issues (
+                id VARCHAR(255) PRIMARY KEY,
+                project VARCHAR(255) NOT NULL,
+                issue_type VARCHAR(100) NOT NULL,
+                author VARCHAR(255) NOT NULL,
+                content TEXT NOT NULL,
+                raw_message TEXT NOT NULL,
+                channel_id VARCHAR(255),
+                timestamp VARCHAR(255),
+                slack_ts VARCHAR(255) UNIQUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
     
-    # 메시지 테이블
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS messages (
-            id TEXT PRIMARY KEY,
-            session_id TEXT NOT NULL,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            response_type TEXT,
-            model_used TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (session_id) REFERENCES sessions (id)
-        )
-    ''')
-    
-    # 사용자 테이블 생성
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id TEXT PRIMARY KEY,
-            email TEXT UNIQUE NOT NULL,
-            name TEXT NOT NULL,
-            picture TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            last_login TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # 슬랙 이슈 테이블 생성
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS slack_issues (
-            id TEXT PRIMARY KEY,
-            project TEXT NOT NULL,
-            issue_type TEXT NOT NULL,
-            author TEXT NOT NULL,
-            content TEXT NOT NULL,
-            raw_message TEXT NOT NULL,
-            channel_id TEXT,
-            timestamp TEXT,
-            slack_ts TEXT UNIQUE,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # 답변 피드백 테이블 생성
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS answer_feedback (
-            id TEXT PRIMARY KEY,
-            session_id TEXT NOT NULL,
-            message_id TEXT NOT NULL,
-            user_question TEXT NOT NULL,
-            ai_answer TEXT NOT NULL,
-            feedback_type TEXT NOT NULL, -- 'positive', 'negative', 'correction'
-            feedback_content TEXT,
-            user_correction TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (session_id) REFERENCES sessions (id),
-            FOREIGN KEY (message_id) REFERENCES messages (id)
-        )
-    ''')
-    
-    # 답변 개선 로그 테이블 생성
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS improvement_logs (
-            id TEXT PRIMARY KEY,
-            issue_type TEXT NOT NULL,
-            original_answer TEXT NOT NULL,
-            improved_answer TEXT NOT NULL,
-            improvement_reason TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
+        # 답변 피드백 테이블 생성
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS answer_feedback (
+                id VARCHAR(255) PRIMARY KEY,
+                session_id VARCHAR(255) NOT NULL,
+                message_id VARCHAR(255) NOT NULL,
+                user_question TEXT NOT NULL,
+                ai_answer TEXT NOT NULL,
+                feedback_type VARCHAR(50) NOT NULL, -- 'positive', 'negative', 'correction'
+                feedback_content TEXT,
+                user_correction TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (session_id) REFERENCES sessions (id),
+                FOREIGN KEY (message_id) REFERENCES messages (id)
+            )
+        ''')
+        
+        # 답변 개선 로그 테이블 생성
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS improvement_logs (
+                id VARCHAR(255) PRIMARY KEY,
+                issue_type VARCHAR(100) NOT NULL,
+                original_answer TEXT NOT NULL,
+                improved_answer TEXT NOT NULL,
+                improvement_reason TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        conn.commit()
+        logger.info("PostgreSQL 데이터베이스 초기화 완료")
+        
+    except psycopg2.Error as e:
+        logger.error(f"데이터베이스 초기화 오류: {e}")
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 # 데이터베이스 초기화 실행
 init_database()
@@ -1152,7 +1186,7 @@ def parse_slack_issue_message(text: str) -> Optional[Dict[str, str]]:
 
 def save_slack_issue(issue_data: Dict[str, str], raw_message: str, channel_id: str = None, timestamp: str = None, slack_ts: str = None) -> str:
     """파싱된 슬랙 이슈를 데이터베이스에 저장합니다."""
-    conn = sqlite3.connect('chat_history.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     issue_id = str(uuid.uuid4())
@@ -1160,7 +1194,7 @@ def save_slack_issue(issue_data: Dict[str, str], raw_message: str, channel_id: s
     try:
         cursor.execute('''
             INSERT INTO slack_issues (id, project, issue_type, author, content, raw_message, channel_id, timestamp, slack_ts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         ''', (
             issue_id,
             issue_data['project'],
@@ -1177,8 +1211,8 @@ def save_slack_issue(issue_data: Dict[str, str], raw_message: str, channel_id: s
         logger.info(f"슬랙 이슈 저장 완료: {issue_id}")
         return issue_id
         
-    except sqlite3.IntegrityError as e:
-        if "UNIQUE constraint failed" in str(e):
+    except psycopg2.IntegrityError as e:
+        if "duplicate key value" in str(e):
             logger.info(f"이미 존재하는 슬랙 메시지: {slack_ts}")
             return None
         raise
@@ -1187,7 +1221,7 @@ def save_slack_issue(issue_data: Dict[str, str], raw_message: str, channel_id: s
 
 def get_slack_issues(limit: int = 50, project: str = None) -> List[SlackIssue]:
     """저장된 슬랙 이슈들을 조회합니다."""
-    conn = sqlite3.connect('chat_history.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     try:
@@ -1195,16 +1229,16 @@ def get_slack_issues(limit: int = 50, project: str = None) -> List[SlackIssue]:
             cursor.execute('''
                 SELECT id, project, issue_type, author, content, raw_message, channel_id, timestamp, slack_ts, created_at
                 FROM slack_issues 
-                WHERE project LIKE ?
+                WHERE project LIKE %s
                 ORDER BY created_at DESC 
-                LIMIT ?
+                LIMIT %s
             ''', (f'%{project}%', limit))
         else:
             cursor.execute('''
                 SELECT id, project, issue_type, author, content, raw_message, channel_id, timestamp, slack_ts, created_at
                 FROM slack_issues 
                 ORDER BY created_at DESC 
-                LIMIT ?
+                LIMIT %s
             ''', (limit,))
         
         rows = cursor.fetchall()
@@ -1319,7 +1353,7 @@ def save_answer_feedback(session_id: str, message_id: str, user_question: str, a
                         feedback_type: str, feedback_content: str = None, user_correction: str = None) -> bool:
     """답변 피드백을 데이터베이스에 저장합니다."""
     try:
-        conn = sqlite3.connect('chat_history.db')
+        conn = get_db_connection()
         cursor = conn.cursor()
         
         feedback_id = str(uuid.uuid4())
@@ -1339,7 +1373,7 @@ def save_answer_feedback(session_id: str, message_id: str, user_question: str, a
 def analyze_feedback_patterns() -> Dict[str, Any]:
     """피드백 패턴을 분석하여 개선점을 찾습니다."""
     try:
-        conn = sqlite3.connect('chat_history.db')
+        conn = get_db_connection()
         cursor = conn.cursor()
         
         # 부정적 피드백이 많은 질문 유형 분석
@@ -1386,7 +1420,7 @@ def analyze_feedback_patterns() -> Dict[str, Any]:
 def get_improvement_suggestions_from_issues() -> List[Dict[str, str]]:
     """슬랙 이슈 데이터를 기반으로 답변 개선 제안을 생성합니다."""
     try:
-        conn = sqlite3.connect('chat_history.db')
+        conn = get_db_connection()
         cursor = conn.cursor()
         
         # 최근 이슈들 가져오기
@@ -1667,7 +1701,7 @@ def get_context_keywords(session_id: str) -> List[str]:
 def create_session(title: str = "새로운 대화") -> str:
     """새로운 채팅 세션 생성"""
     session_id = str(uuid.uuid4())
-    conn = sqlite3.connect('chat_history.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     cursor.execute('''
@@ -1681,7 +1715,7 @@ def create_session(title: str = "새로운 대화") -> str:
 def save_message(session_id: str, role: str, content: str, response_type: str = None, model_used: str = None) -> str:
     """메시지 저장"""
     message_id = str(uuid.uuid4())
-    conn = sqlite3.connect('chat_history.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     cursor.execute('''
@@ -1691,7 +1725,7 @@ def save_message(session_id: str, role: str, content: str, response_type: str = 
     
     # 세션 업데이트 시간 갱신
     cursor.execute('''
-        UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?
+        UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = %s
     ''', (session_id,))
     
     conn.commit()
@@ -1700,7 +1734,7 @@ def save_message(session_id: str, role: str, content: str, response_type: str = 
 
 def get_sessions() -> List[Session]:
     """모든 세션 목록 조회"""
-    conn = sqlite3.connect('chat_history.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     cursor.execute('''
@@ -1723,13 +1757,13 @@ def get_sessions() -> List[Session]:
 
 def get_session_messages(session_id: str) -> List[Message]:
     """특정 세션의 메시지 목록 조회"""
-    conn = sqlite3.connect('chat_history.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     cursor.execute('''
         SELECT id, session_id, role, content, response_type, model_used, created_at
         FROM messages 
-        WHERE session_id = ?
+        WHERE session_id = %s
         ORDER BY created_at ASC
     ''', (session_id,))
     
@@ -1750,23 +1784,23 @@ def get_session_messages(session_id: str) -> List[Message]:
 
 def delete_session(session_id: str):
     """세션과 관련 메시지 삭제"""
-    conn = sqlite3.connect('chat_history.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
     
-    cursor.execute('DELETE FROM messages WHERE session_id = ?', (session_id,))
-    cursor.execute('DELETE FROM sessions WHERE id = ?', (session_id,))
+    cursor.execute('DELETE FROM messages WHERE session_id = %s', (session_id,))
+    cursor.execute('DELETE FROM sessions WHERE id = %s', (session_id,))
     
     conn.commit()
     conn.close()
 
 def update_session_title(session_id: str, title: str):
     """세션 제목 업데이트"""
-    conn = sqlite3.connect('chat_history.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     cursor.execute('''
         UPDATE sessions SET title = ?, updated_at = CURRENT_TIMESTAMP 
-        WHERE id = ?
+        WHERE id = %s
     ''', (title, session_id))
     
     conn.commit()
@@ -2982,7 +3016,7 @@ def get_slack_issue_stats():
     - 프로젝트별 이슈 분포 파악
     - 작성자별 활동 분석
     """
-    conn = sqlite3.connect('chat_history.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     try:
@@ -3075,12 +3109,12 @@ async def submit_feedback(request: FeedbackRequest):
     """
     try:
         # 해당 메시지 정보 가져오기
-        conn = sqlite3.connect('chat_history.db')
+        conn = get_db_connection()
         cursor = conn.cursor()
         
         cursor.execute('''
             SELECT content FROM messages 
-            WHERE id = ? AND session_id = ?
+            WHERE id = %s AND session_id = ?
         ''', (request.message_id, request.session_id))
         
         message_result = cursor.fetchone()
@@ -3094,7 +3128,7 @@ async def submit_feedback(request: FeedbackRequest):
         # 이전 사용자 메시지 찾기
         cursor.execute('''
             SELECT content FROM messages 
-            WHERE session_id = ? AND role = 'user'
+            WHERE session_id = %s AND role = 'user'
             ORDER BY created_at DESC
             LIMIT 1
         ''', (request.session_id,))

@@ -258,6 +258,22 @@ function logout() {
 - `OLLAMA_BASE_URL`: Ollama 서버 URL (기본값: http://localhost:11434)
 - `PORT`: 서버 포트 (기본값: 8000)
 
+### PostgreSQL 데이터베이스 설정
+- `DATABASE_URL`: PostgreSQL 연결 URL (예: postgresql://username:password@localhost:5432/chat_history)
+- `DB_HOST`: 데이터베이스 호스트 (기본값: localhost)
+- `DB_PORT`: 데이터베이스 포트 (기본값: 5432)
+- `DB_NAME`: 데이터베이스 이름 (기본값: chat_history)
+- `DB_USER`: 데이터베이스 사용자명
+- `DB_PASSWORD`: 데이터베이스 비밀번호
+
+### 슬랙 API 설정
+- `SLACK_BOT_TOKEN`: 슬랙 봇 토큰
+- `SLACK_CHANNEL_ID`: 슬랙 채널 ID (기본값: C08M47TM2KH)
+
+### Anthropic Claude API 설정
+- `ANTHROPIC_API_KEY`: Anthropic Claude API 키
+- `USE_CLAUDE`: Claude 사용 여부 (기본값: true)
+
 ### Google OAuth 설정 (로그인 기능)
 - `GOOGLE_CLIENT_ID`: Google OAuth 클라이언트 ID
 - `GOOGLE_CLIENT_SECRET`: Google OAuth 클라이언트 시크릿
