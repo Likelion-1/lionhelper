@@ -14,9 +14,28 @@ services:
         value: http://korean-chatbot-ollama:11434
       - key: OLLAMA_MODEL
         value: openai/gpt-oss-20b
-      # 외부 Ollama 서비스가 필요한 경우 아래 주석 해제
-      # - key: EXTERNAL_OLLAMA_URL
-      #   value: https://your-ollama-service.com
+      # PostgreSQL 데이터베이스 연결 (Render에서 자동 생성)
+      - key: DATABASE_URL
+        fromDatabase:
+          name: chat-history-db
+          property: connectionString
+      # 슬랙 API 설정
+      - key: SLACK_BOT_TOKEN
+        sync: false  # 수동으로 설정 필요
+      - key: SLACK_CHANNEL_ID
+        value: C08M47TM2KH
+      # Anthropic Claude API 설정
+      - key: ANTHROPIC_API_KEY
+        sync: false  # 수동으로 설정 필요
+      - key: USE_CLAUDE
+        value: true
+      # Google OAuth 설정 (선택사항)
+      - key: GOOGLE_CLIENT_ID
+        sync: false  # 수동으로 설정 필요
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false  # 수동으로 설정 필요
+      - key: SECRET_KEY
+        sync: false  # 수동으로 설정 필요
 
   - type: web
     name: korean-chatbot-ollama
@@ -26,3 +45,10 @@ services:
     envVars:
       - key: OLLAMA_MODEL
         value: openai/gpt-oss-20b
+
+  - type: pserv
+    name: chat-history-db
+    env: postgresql
+    plan: starter
+    databaseName: chat_history
+    databaseUser: chat_user

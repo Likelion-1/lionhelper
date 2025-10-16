@@ -315,8 +315,7 @@ def init_database():
     finally:
         conn.close()
 
-# 데이터베이스 초기화 실행
-init_database()
+# 데이터베이스 초기화는 앱 시작 시점에 실행 (지연 초기화)
 
 # QA 데이터베이스 (키워드 기반 빠른 응답)
 QA_DATABASE = {
@@ -881,6 +880,19 @@ try:
 except:
     pass
 
+# 앱 시작 시 데이터베이스 초기화
+@app.on_event("startup")
+async def startup_event():
+    """앱 시작 시 데이터베이스 초기화"""
+    try:
+        logger.info("데이터베이스 초기화 시작...")
+        init_database()
+        logger.info("데이터베이스 초기화 완료!")
+    except Exception as e:
+        logger.error(f"데이터베이스 초기화 실패: {e}")
+        # 데이터베이스 초기화 실패해도 앱은 계속 실행
+        pass
+
 print("🤖 Claude + 키워드 기반 지능형 AI 챗봇 시스템이 로드되었습니다.")
 if claude_client:
     print("Claude-3-Haiku: 활성화됨")
@@ -1340,13 +1352,20 @@ async def sync_slack_issues(hours: int = 24, force: bool = False) -> Dict[str, A
         }
         
     except Exception as e:
-        logger.error(f"슬랙 동기화 오류: {e}")
+        logger.error(f"슬랙 동기화 오류: {e}", exc_info=True)
+        error_msg = str(e) if str(e) else f"알 수 없는 오류: {type(e).__name__}"
         return {
             "success": False,
-            "message": f"동기화 실패: {str(e)}",
+            "message": f"동기화 실패: {error_msg}",
             "new_issues": 0,
             "skipped_issues": 0,
-            "errors": 1
+            "errors": 1,
+            "error_details": {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "slack_client_available": bool(slack_client),
+                "slack_channel_id": SLACK_CHANNEL_ID
+            }
         }
 
 def save_answer_feedback(session_id: str, message_id: str, user_question: str, ai_answer: str, 
