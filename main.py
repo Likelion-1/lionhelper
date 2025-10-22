@@ -1739,6 +1739,76 @@ def get_context_keywords(session_id: str) -> List[str]:
         logger.warning(f"컨텍스트 키워드 추출 실패: {str(e)}")
         return []
 
+def get_conversation_context(session_id: str, max_messages: int = 6) -> str:
+    """세션의 최근 대화 내용을 컨텍스트로 반환합니다."""
+    if not session_id:
+        return ""
+    
+    try:
+        messages = get_session_messages(session_id)
+        if not messages:
+            return ""
+        
+        # 최근 대화만 가져오기 (너무 오래된 것은 제외)
+        recent_messages = messages[-max_messages:] if len(messages) > max_messages else messages
+        
+        context_parts = []
+        for message in recent_messages:
+            role_name = "사용자" if message.role == "user" else "상담사"
+            context_parts.append(f"{role_name}: {message.content}")
+        
+        if context_parts:
+            return "\n".join(context_parts)
+        return ""
+        
+    except Exception as e:
+        logger.warning(f"대화 컨텍스트 추출 실패: {str(e)}")
+        return ""
+
+def get_conversation_summary(session_id: str) -> str:
+    """세션의 대화 주제와 맥락을 요약합니다."""
+    if not session_id:
+        return ""
+    
+    try:
+        messages = get_session_messages(session_id)
+        if not messages or len(messages) < 2:
+            return ""
+        
+        # 사용자 메시지들만 추출하여 주제 파악
+        user_messages = [msg.content for msg in messages if msg.role == "user"]
+        if not user_messages:
+            return ""
+        
+        # 최근 3개 사용자 메시지로 주제 파악
+        recent_topics = user_messages[-3:] if len(user_messages) >= 3 else user_messages
+        
+        # 간단한 주제 키워드 추출
+        topic_keywords = []
+        for message in recent_topics:
+            content_lower = message.lower()
+            # 주요 키워드들 체크
+            if any(word in content_lower for word in ["훈련장려금", "장려금", "지급"]):
+                topic_keywords.append("훈련장려금")
+            if any(word in content_lower for word in ["출결", "출석", "지각", "조퇴"]):
+                topic_keywords.append("출결관리")
+            if any(word in content_lower for word in ["공결", "결석", "병가"]):
+                topic_keywords.append("공결신청")
+            if any(word in content_lower for word in ["줌", "온라인", "수업"]):
+                topic_keywords.append("온라인수업")
+            if any(word in content_lower for word in ["노트북", "대여", "기기"]):
+                topic_keywords.append("노트북대여")
+        
+        # 중복 제거하고 주제 요약
+        unique_topics = list(set(topic_keywords))
+        if unique_topics:
+            return f"이전 대화 주제: {', '.join(unique_topics)}"
+        return ""
+        
+    except Exception as e:
+        logger.warning(f"대화 요약 생성 실패: {str(e)}")
+        return ""
+
 def create_session(title: str = "새로운 대화") -> str:
     """새로운 채팅 세션 생성"""
     session_id = str(uuid.uuid4())
@@ -1890,13 +1960,20 @@ async def call_claude(user_prompt: str, max_tokens: int = 1000, temperature: flo
         logger.error(f"Claude API 호출 실패: {str(e)}")
         return None
 
-async def call_claude_with_knowledge(user_prompt: str, keyword_matches: List[dict] = None, max_tokens: int = 1000) -> Optional[str]:
-    """Claude가 키워드 DB 정보를 참고해서 지능적인 답변을 생성"""
+async def call_claude_with_knowledge(user_prompt: str, keyword_matches: List[dict] = None, max_tokens: int = 1000, session_id: str = None) -> Optional[str]:
+    """Claude가 키워드 DB 정보와 대화 컨텍스트를 참고해서 지능적인 답변을 생성"""
     if not claude_client:
         logger.warning("Claude 클라이언트가 초기화되지 않았습니다")
         return None
     
     try:
+        # 대화 컨텍스트 가져오기
+        conversation_context = ""
+        conversation_summary = ""
+        if session_id:
+            conversation_context = get_conversation_context(session_id)
+            conversation_summary = get_conversation_summary(session_id)
+        
         # 훈련 전문가로서의 시스템 컨텍스트
         system_context = """당신은 멋쟁이사자처럼 K-Digital Training 부트캠프의 전문 AI 상담사입니다.
 
@@ -1905,6 +1982,7 @@ async def call_claude_with_knowledge(user_prompt: str, keyword_matches: List[dic
 - 규정과 절차를 명확하게 안내
 - 복잡한 내용을 이해하기 쉽게 설명
 - 항상 도움이 되는 추가 정보나 팁 제공
+- 이전 대화 내용을 기억하고 연관성 있게 답변
 
 📋 주요 분야:
 • 훈련장려금: 일일 15,800원, 80% 출석률 필요, 단위기간별 지급
@@ -1914,6 +1992,18 @@ async def call_claude_with_knowledge(user_prompt: str, keyword_matches: List[dic
 • 노트북 대여: 신청 절차, 관리 방법, 반납 규정
 • 수료 조건: 출석률, 평가 기준 등"""
 
+        # 대화 컨텍스트가 있는 경우 추가
+        context_section = ""
+        if conversation_context:
+            context_section = f"""
+
+💬 이전 대화 내용:
+{conversation_context}
+
+{conversation_summary}
+
+위 대화 내용을 참고하여 연속성 있는 답변을 해주세요. 이전에 언급된 내용이나 질문과 관련이 있다면 자연스럽게 연결하여 답변해주세요."""
+
         if keyword_matches and len(keyword_matches) > 0:
             # 키워드 매칭된 정보들을 참고 자료로 활용
             reference_info = "\n\n📚 참고 정보:\n"
@@ -1921,7 +2011,7 @@ async def call_claude_with_knowledge(user_prompt: str, keyword_matches: List[dic
                 reference_info += f"{i}. Q: {match['question']}\n"
                 reference_info += f"   A: {match['answer'][:200]}{'...' if len(match['answer']) > 200 else ''}\n\n"
             
-            enhanced_prompt = f"""{system_context}
+            enhanced_prompt = f"""{system_context}{context_section}
 
 {reference_info}위 참고 정보를 바탕으로 다음 질문에 정확하고 자연스럽게 답변해주세요:
 
@@ -1929,12 +2019,14 @@ async def call_claude_with_knowledge(user_prompt: str, keyword_matches: List[dic
 
 답변 가이드라인:
 1. 참고 정보의 핵심 내용을 포함하되, 기계적인 복사가 아닌 자연스러운 설명으로
-2. 추가적인 맥락이나 도움이 될 만한 정보가 있다면 함께 제공
-3. 규정이나 절차가 복잡하다면 단계별로 쉽게 설명
-4. 친근하면서도 전문적인 톤으로 답변"""
+2. 이전 대화와의 연관성을 고려하여 맥락 있는 답변 제공
+3. 추가적인 맥락이나 도움이 될 만한 정보가 있다면 함께 제공
+4. 규정이나 절차가 복잡하다면 단계별로 쉽게 설명
+5. 친근하면서도 전문적인 톤으로 답변
+6. 이전 대화에서 언급된 내용이 있다면 자연스럽게 연결하여 답변"""
         else:
             # 키워드 매칭이 없는 경우 일반 대화
-            enhanced_prompt = f"""{system_context}
+            enhanced_prompt = f"""{system_context}{context_section}
 
 다음 질문에 멋쟁이사자처럼 부트캠프 상담사로서 답변해주세요:
 
@@ -1942,9 +2034,11 @@ async def call_claude_with_knowledge(user_prompt: str, keyword_matches: List[dic
 
 답변 가이드라인:
 1. 친근하고 도움이 되는 톤으로 답변
-2. 부트캠프와 관련이 있다면 관련 정보나 안내 제공
-3. 일반적인 질문이라면 자연스럽게 대화
-4. 필요시 추가 질문을 유도하거나 도움 제안"""
+2. 이전 대화 내용과의 연관성을 고려하여 맥락 있는 답변
+3. 부트캠프와 관련이 있다면 관련 정보나 안내 제공
+4. 일반적인 질문이라면 자연스럽게 대화
+5. 필요시 추가 질문을 유도하거나 도움 제안
+6. 이전 대화에서 언급된 내용이 있다면 자연스럽게 연결하여 답변"""
         
         # Claude API 호출
         response = claude_client.make_request(enhanced_prompt, max_tokens)
@@ -2003,17 +2097,15 @@ async def root():
     description="""
     ## 🚀 하이브리드 AI 시스템
     
-    **Claude-3-Haiku** + **GPT-4o-mini** + **키워드 DB**를 활용한 지능형 챗봇
+    **Claude-3-Haiku** + **키워드 DB**를 활용한 지능형 챗봇
     
     ### 🎯 **AI 모델 우선순위**
-    1. **Claude-3-Haiku** (기본) - 일반 대화, 코딩 질문 등
-    2. **GPT-4o-mini** (백업) - Claude 실패 시 또는 직접 지정
-    3. **키워드 DB** (전문) - 훈련장려금, 출결 등 전문 정보
+    1. **Claude-3-Haiku** (기본) - 모든 대화와 전문 정보 처리
+    2. **키워드 DB** (전문) - 훈련장려금, 출결 등 전문 정보
     
     ### 💡 **사용법**
-    - `use_claude: true` (기본값) → Claude 우선 사용
-    - `use_gpt4o: true` → GPT-4o-mini 직접 사용  
-    - 둘 다 false → 키워드 DB만 사용
+    - `use_claude: true` (기본값) → Claude 지능형 응답 사용
+    - `use_claude: false` → 키워드 DB만 사용
     
     ### 📝 **질문 예시**
     - 일반 대화: "안녕?", "코딩 질문 가능해?"
@@ -2078,7 +2170,8 @@ async def chat_with_hybrid(request: ChatRequest):
                 ai_response = await call_claude_with_knowledge(
                     request.prompt,
                     keyword_matches=related_data,
-                    max_tokens=request.max_new_tokens
+                    max_tokens=request.max_new_tokens,
+                    session_id=request.session_id
                 )
                 
                 if ai_response and len(ai_response.strip()) > 10:
@@ -2118,48 +2211,15 @@ async def chat_with_hybrid(request: ChatRequest):
                 logger.error(f"Claude 지능형 응답 실패: {str(e)}")
                 # Claude 실패 시 키워드 DB로 fallback
         
-        # 🔄 GPT-4o-mini 모델 사용 (Claude 실패 시 또는 직접 사용)
-        elif request.use_gpt4o:
-            logger.info("채팅 모드: GPT-4o-mini 모델 우선 사용")
+        # 🔍 Claude를 사용하지 않는 경우: 키워드 기반 처리
+        else:
+            logger.info("키워드 기반 처리 모드")
             
             # 질문 의도 분석
             user_intent = analyze_question_intent(request.prompt)
             logger.info(f"질문 의도 분석: {user_intent}")
             
-            # 일반 대화인 경우 바로 GPT-4o-mini 사용 (키워드 검색 생략)
-            if user_intent.get("is_general_conversation", False):
-                logger.info("일반 대화 감지 - GPT-4o-mini 직접 사용")
-                try:
-                    ai_response = await call_gpt4o_mini(
-                        request.prompt, 
-                        request.max_new_tokens, 
-                        request.temperature,
-                        context_data=[]  # 일반 대화는 컨텍스트 없이
-                    )
-                    
-                    if ai_response and "연결할 수 없습니다" not in ai_response and len(ai_response.strip()) > 5:
-                        # 📝 대화 기록 저장
-                        if request.session_id:
-                            try:
-                                save_message(request.session_id, "user", request.prompt)
-                                save_message(request.session_id, "assistant", ai_response, 
-                                           response_type="gpt4o_chat", model_used="gpt-3.5-turbo (General Chat)")
-                            except Exception as e:
-                                logger.warning(f"대화 기록 저장 실패: {str(e)}")
-                        
-                        logger.info("GPT-4o-mini 일반 대화 응답 성공")
-                        return ChatResponse(
-                            response=ai_response,
-                            model="gpt-3.5-turbo (General Chat)",
-                            status="success",
-                            matched_keywords=[],
-                            response_type="gpt4o_chat",
-                            related_questions=None,
-                            total_related=0
-                        )
-                except Exception as e:
-                    logger.error(f"GPT-4o-mini 일반 대화 실패: {str(e)}")
-            # GPT-4o-mini를 사용하지 않거나 실패 시 일반 대화 처리
+            # 일반 대화인 경우 기본 응답 제공
             if user_intent.get("is_general_conversation", False):
                 logger.info("일반 대화 감지 - 기본 응답 제공")
                 # 입력에 따른 적절한 응답 선택
@@ -2184,77 +2244,12 @@ async def chat_with_hybrid(request: ChatRequest):
                     total_related=0
                 )
             
-            # 훈련 관련 질문인 경우만 컨텍스트 검색 수행
+            # 훈련 관련 질문인 경우 컨텍스트 검색 수행
             context_keywords = get_context_keywords(request.session_id) if request.session_id else []
             if context_keywords:
                 logger.info(f"컨텍스트 키워드: {context_keywords}")
-            
-            # 관련 질문들 검색 (컨텍스트 제공용)
-            related_questions_data = find_related_questions_smart(
-                request.prompt, 
-                limit=5,  # 컨텍스트용으로 적당히
-                min_score=0.5,  # 관련성 있는 것만
-                context_keywords=context_keywords
-            )
-            
-            # 🤖 GPT-4o-mini 모델 우선 사용 (항상 먼저 시도)
-            try:
-                ai_response = await call_gpt4o_mini(
-                    request.prompt, 
-                    request.max_new_tokens, 
-                    request.temperature,
-                    context_data=related_questions_data  # 관련 QA 데이터 컨텍스트 제공
-                )
-                model_name = "gpt-3.5-turbo"
-                
-                # GPT-4o-mini 응답이 성공적인 경우 (항상 우선 반환)
-                if ai_response and "연결할 수 없습니다" not in ai_response and "API 연결에 문제가 발생했습니다" not in ai_response and len(ai_response.strip()) > 5:
-                    # 관련 질문들을 추천으로 제공 (높은 점수만)
-                    related_questions = []
-                    for rq in related_questions_data[:3]:  # 상위 3개만
-                        if rq["score"] > 4.0:  # 훨씬 높은 점수만 (정말 관련성이 확실한 것만)
-                            answer_preview = rq["answer"]
-                            if len(answer_preview) > 80:
-                                answer_preview = answer_preview[:80] + "..."
-                            
-                            related_questions.append(RelatedQuestion(
-                                id=rq["id"],
-                                question=rq["question"],
-                                answer_preview=answer_preview,
-                                score=rq["score"],
-                                matched_keywords=rq["matched_keywords"]
-                            ))
-                    
-                    # 📝 대화 기록 저장 (GPT-4o-mini 성공 시)
-                    if request.session_id:
-                        try:
-                            save_message(request.session_id, "user", request.prompt)
-                            save_message(request.session_id, "assistant", ai_response, 
-                                       response_type="gpt4o_chat", model_used=f"{model_name} (Chat Mode)")
-                        except Exception as e:
-                            logger.warning(f"대화 기록 저장 실패: {str(e)}")
-                    
-                    logger.info(f"{model_name} 모델 응답 성공 (우선 반환)")
-                    return ChatResponse(
-                        response=ai_response,
-                        model=f"{model_name} (Chat Mode)",
-                        status="success",
-                        matched_keywords=[],
-                        response_type="gpt4o_chat",
-                        related_questions=related_questions if related_questions else None,
-                        total_related=len(related_questions) if related_questions else 0
-                    )
-                else:
-                    logger.warning(f"{model_name} 응답이 빈 응답이거나 오류 메시지")
-            except Exception as e:
-                logger.error(f"{model_name} 모델 사용 실패: {str(e)}")
-            
-            # GPT-4o-mini 실패 시에만 QA 데이터베이스로 fallback
-            logger.info("GPT-4o-mini 실패, QA 데이터베이스로 전환")
         
-        # GPT-4o-mini를 사용하지 않거나 실패한 경우에만 키워드 기반 처리 진행
-        
-        # 🔍 검색 모드 또는 GPT-4o-mini 실패 시: 키워드 기반 처리
+        # 🔍 키워드 기반 처리
         logger.info("키워드 기반 검색 모드 시작")
         
         # 📌 먼저 일반 대화 체크 (키워드 검색 전에)
@@ -2302,7 +2297,7 @@ async def chat_with_hybrid(request: ChatRequest):
         )
         related_questions = []
         
-        # 🎯 키워드 기반 답변 선택 로직 (검색 모드 또는 GPT-4o-mini 실패 시)
+        # 🎯 키워드 기반 답변 선택 로직
         if related_questions_data and len(related_questions_data) > 0:
             # 최고 점수 질문을 주 답변으로 선택
             best_question = related_questions_data[0]
@@ -2377,32 +2372,12 @@ async def chat_with_hybrid(request: ChatRequest):
                             matched_keywords=rq["matched_keywords"]
                         ))
             else:
-                # 진짜로 관련 없는 경우만 GPT-4o-mini 사용
-                if request.use_gpt4o:
-                    ai_response = await call_gpt4o_mini(
-                        request.prompt, 
-                        request.max_new_tokens, 
-                        request.temperature
-                    )
-                    
-                    if "연결할 수 없습니다" in ai_response or "API 연결에 문제가 발생했습니다" in ai_response or "죄송합니다" in ai_response:
-                        response = "죄송합니다. 해당 질문에 대한 정확한 답변을 찾을 수 없습니다.\n\n구체적인 키워드(예: 훈련장려금, 출결, 줌 등)로 다시 질문해주시면 도움을 드릴 수 있습니다."
-                        status = "fallback"
-                        response_type = "fallback"
-                        model_name = "Smart Intent-based Response System"
-                        matched_keywords = []
-                    else:
-                        response = ai_response
-                        status = "success"
-                        response_type = "gpt4o"
-                        model_name = "gpt-3.5-turbo"
-                        matched_keywords = []
-                else:
-                    response = "죄송합니다. 해당 질문에 대한 정확한 답변을 찾을 수 없습니다.\n\n구체적인 키워드(예: 훈련장려금, 출결, 줌 등)로 다시 질문해주시면 도움을 드릴 수 있습니다."
-                    status = "no_match"
-                    response_type = "fallback"
-                    model_name = "Smart Intent-based Response System"
-                    matched_keywords = []
+                # 관련 없는 경우 기본 안내 메시지 제공
+                response = "죄송합니다. 해당 질문에 대한 정확한 답변을 찾을 수 없습니다.\n\n구체적인 키워드(예: 훈련장려금, 출결, 줌 등)로 다시 질문해주시면 도움을 드릴 수 있습니다."
+                status = "no_match"
+                response_type = "fallback"
+                model_name = "Smart Intent-based Response System"
+                matched_keywords = []
         
         # 응답 데이터 유효성 검사
         if not response:
