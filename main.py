@@ -1809,6 +1809,131 @@ def get_conversation_summary(session_id: str) -> str:
         logger.warning(f"대화 요약 생성 실패: {str(e)}")
         return ""
 
+def get_conversation_flow(session_id: str) -> str:
+    """대화의 흐름과 맥락을 파악합니다."""
+    if not session_id:
+        return ""
+    
+    try:
+        messages = get_session_messages(session_id)
+        if not messages or len(messages) < 4:
+            return ""
+        
+        # 최근 대화 흐름 분석
+        recent_messages = messages[-6:] if len(messages) > 6 else messages
+        
+        flow_indicators = []
+        
+        # 질문 패턴 분석
+        for i, message in enumerate(recent_messages):
+            if message.role == "user":
+                content_lower = message.content.lower()
+                
+                # 연속 질문 패턴
+                if any(word in content_lower for word in ["그러면", "그럼", "그래서", "그렇다면"]):
+                    flow_indicators.append("연속 질문")
+                
+                # 구체화 질문 패턴
+                if any(word in content_lower for word in ["몇", "얼마", "언제", "어떻게", "왜"]):
+                    flow_indicators.append("구체적 질문")
+                
+                # 확인 질문 패턴
+                if any(word in content_lower for word in ["괜찮", "가능", "되나", "할 수 있"]):
+                    flow_indicators.append("확인 질문")
+        
+        if flow_indicators:
+            return f"대화 흐름: {', '.join(set(flow_indicators))}"
+        return ""
+        
+    except Exception as e:
+        logger.warning(f"대화 흐름 분석 실패: {str(e)}")
+        return ""
+
+def get_user_context(session_id: str) -> str:
+    """사용자의 상황과 맥락을 파악합니다."""
+    if not session_id:
+        return ""
+    
+    try:
+        messages = get_session_messages(session_id)
+        if not messages:
+            return ""
+        
+        # 사용자 메시지에서 상황 파악
+        user_messages = [msg.content for msg in messages if msg.role == "user"]
+        if not user_messages:
+            return ""
+        
+        context_indicators = []
+        
+        for message in user_messages:
+            content_lower = message.lower()
+            
+            # 긴급성 표현
+            if any(word in content_lower for word in ["급해", "빨리", "어떻게 해야", "도와줘"]):
+                context_indicators.append("긴급 상황")
+            
+            # 불안감 표현
+            if any(word in content_lower for word in ["걱정", "불안", "어떻게 될까", "괜찮을까"]):
+                context_indicators.append("불안감")
+            
+            # 구체적 상황
+            if any(word in content_lower for word in ["몇 일", "몇 번", "몇 개", "얼마나"]):
+                context_indicators.append("구체적 상황")
+        
+        if context_indicators:
+            return f"사용자 상황: {', '.join(set(context_indicators))}"
+        return ""
+        
+    except Exception as e:
+        logger.warning(f"사용자 맥락 분석 실패: {str(e)}")
+        return ""
+
+def get_conversation_memory(session_id: str) -> str:
+    """대화에서 언급된 구체적인 정보들을 기억합니다."""
+    if not session_id:
+        return ""
+    
+    try:
+        messages = get_session_messages(session_id)
+        if not messages:
+            return ""
+        
+        memory_items = []
+        
+        # 최근 대화에서 구체적인 정보 추출
+        recent_messages = messages[-8:] if len(messages) > 8 else messages
+        
+        for message in recent_messages:
+            if message.role == "user":
+                content = message.content
+                
+                # 숫자 정보 추출 (일수, 횟수 등)
+                import re
+                numbers = re.findall(r'\d+', content)
+                if numbers:
+                    for num in numbers:
+                        if any(word in content.lower() for word in ["일", "번", "개", "회"]):
+                            memory_items.append(f"사용자가 언급한 숫자: {num}")
+                
+                # 구체적인 상황 추출
+                if "16일" in content:
+                    memory_items.append("16일 출석 관련 질문")
+                if "80%" in content:
+                    memory_items.append("80% 출석률 관련 질문")
+                if "공결" in content:
+                    memory_items.append("공결 관련 질문")
+                if "훈련장려금" in content:
+                    memory_items.append("훈련장려금 관련 질문")
+        
+        if memory_items:
+            return f"대화 기억: {', '.join(set(memory_items))}"
+        return ""
+        
+    except Exception as e:
+        logger.warning(f"대화 기억 분석 실패: {str(e)}")
+        return ""
+
 def create_session(title: str = "새로운 대화") -> str:
     """새로운 채팅 세션 생성"""
     session_id = str(uuid.uuid4())
@@ -1970,9 +2095,15 @@ async def call_claude_with_knowledge(user_prompt: str, keyword_matches: List[dic
         # 대화 컨텍스트 가져오기
         conversation_context = ""
         conversation_summary = ""
+        conversation_flow = ""
+        user_context = ""
+        conversation_memory = ""
         if session_id:
             conversation_context = get_conversation_context(session_id)
             conversation_summary = get_conversation_summary(session_id)
+            conversation_flow = get_conversation_flow(session_id)
+            user_context = get_user_context(session_id)
+            conversation_memory = get_conversation_memory(session_id)
         
         # 훈련 전문가로서의 시스템 컨텍스트
         system_context = """당신은 멋쟁이사자처럼 K-Digital Training 부트캠프의 전문 AI 상담사입니다.
@@ -2001,8 +2132,11 @@ async def call_claude_with_knowledge(user_prompt: str, keyword_matches: List[dic
 {conversation_context}
 
 {conversation_summary}
+{conversation_flow}
+{user_context}
+{conversation_memory}
 
-위 대화 내용을 참고하여 연속성 있는 답변을 해주세요. 이전에 언급된 내용이나 질문과 관련이 있다면 자연스럽게 연결하여 답변해주세요."""
+위 대화 내용을 참고하여 연속성 있는 답변을 해주세요. 이전에 언급된 내용이나 질문과 관련이 있다면 자연스럽게 연결하여 답변해주세요. 사용자의 상황과 감정을 고려하여 공감적이고 도움이 되는 답변을 제공해주세요. 특히 구체적인 숫자나 상황이 언급되었다면 그 맥락을 정확히 기억하고 활용해주세요."""
 
         if keyword_matches and len(keyword_matches) > 0:
             # 키워드 매칭된 정보들을 참고 자료로 활용
@@ -2020,10 +2154,13 @@ async def call_claude_with_knowledge(user_prompt: str, keyword_matches: List[dic
 답변 가이드라인:
 1. 참고 정보의 핵심 내용을 포함하되, 기계적인 복사가 아닌 자연스러운 설명으로
 2. 이전 대화와의 연관성을 고려하여 맥락 있는 답변 제공
-3. 추가적인 맥락이나 도움이 될 만한 정보가 있다면 함께 제공
-4. 규정이나 절차가 복잡하다면 단계별로 쉽게 설명
-5. 친근하면서도 전문적인 톤으로 답변
-6. 이전 대화에서 언급된 내용이 있다면 자연스럽게 연결하여 답변"""
+3. 사용자의 상황과 감정을 이해하고 공감적인 톤으로 답변
+4. 추가적인 맥락이나 도움이 될 만한 정보가 있다면 함께 제공
+5. 규정이나 절차가 복잡하다면 단계별로 쉽게 설명
+6. 친근하면서도 전문적인 톤으로 답변
+7. 이전 대화에서 언급된 내용이 있다면 자연스럽게 연결하여 답변
+8. 사용자가 걱정하거나 불안해하는 상황이라면 안심시켜주는 표현 포함
+9. 구체적인 숫자나 날짜가 언급되었다면 그 맥락을 유지하여 답변"""
         else:
             # 키워드 매칭이 없는 경우 일반 대화
             enhanced_prompt = f"""{system_context}{context_section}
@@ -2035,10 +2172,13 @@ async def call_claude_with_knowledge(user_prompt: str, keyword_matches: List[dic
 답변 가이드라인:
 1. 친근하고 도움이 되는 톤으로 답변
 2. 이전 대화 내용과의 연관성을 고려하여 맥락 있는 답변
-3. 부트캠프와 관련이 있다면 관련 정보나 안내 제공
-4. 일반적인 질문이라면 자연스럽게 대화
-5. 필요시 추가 질문을 유도하거나 도움 제안
-6. 이전 대화에서 언급된 내용이 있다면 자연스럽게 연결하여 답변"""
+3. 사용자의 상황과 감정을 이해하고 공감적인 톤으로 답변
+4. 부트캠프와 관련이 있다면 관련 정보나 안내 제공
+5. 일반적인 질문이라면 자연스럽게 대화
+6. 필요시 추가 질문을 유도하거나 도움 제안
+7. 이전 대화에서 언급된 내용이 있다면 자연스럽게 연결하여 답변
+8. 사용자가 걱정하거나 불안해하는 상황이라면 안심시켜주는 표현 포함
+9. 구체적인 숫자나 날짜가 언급되었다면 그 맥락을 유지하여 답변"""
         
         # Claude API 호출
         response = claude_client.make_request(enhanced_prompt, max_tokens)
