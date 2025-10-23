@@ -1,14 +1,11 @@
 
 import os
 import time
-import json
 import uuid
 import logging
 import psycopg2
 from psycopg2.extras import RealDictCursor
-import requests
 import uvicorn
-import asyncio
 import re
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
@@ -54,17 +51,6 @@ slack_client = WebClient(token=SLACK_BOT_TOKEN) if SLACK_BOT_TOKEN else None
 #     redirect_uri="http://localhost:8001/auth/google/callback"
 # )
 
-# JWT 토큰 생성 함수
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
-
 # JWT 토큰 검증 함수
 def verify_token(token: str):
     try:
@@ -72,37 +58,6 @@ def verify_token(token: str):
         return payload
     except JWTError:
         return None
-
-# 사용자 관련 함수들
-def get_user_by_email(email: str):
-    """이메일로 사용자 조회"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM users WHERE email = %s', (email,))
-    user = cursor.fetchone()
-    conn.close()
-    return user
-
-def create_user(user_data: dict):
-    """새 사용자 생성"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO users (id, email, name, picture)
-        VALUES (%s, %s, %s, %s)
-    ''', (user_data['id'], user_data['email'], user_data['name'], user_data.get('picture')))
-    conn.commit()
-    conn.close()
-
-def update_user_login(user_id: str):
-    """사용자 마지막 로그인 시간 업데이트"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = %s
-    ''', (user_id,))
-    conn.commit()
-    conn.close()
 
 # JWT 토큰 의존성
 security = HTTPBearer()
