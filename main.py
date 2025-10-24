@@ -1108,10 +1108,17 @@ class ImprovementSuggestion(BaseModel):
     improvement_reason: str = Field(..., description="개선 이유")
 
 # 슬랙 관련 함수들
-def parse_slack_issue_message(text: str) -> Optional[Dict[str, str]]:
+def parse_slack_issue_message(text: str, user_name: str = None) -> Optional[Dict[str, str]]:
     """슬랙 메시지에서 이슈 정보를 파싱합니다."""
     # 멘션 태그가 포함된 메시지인지 확인 (@here, @everyone, @channel)
-    if not any(mention in text for mention in ["<@here>", "<@everyone>", "<@channel>" ,"<!here>", "<!everyone>", "<!channel>"]):
+    has_mention = any(mention in text for mention in ["<@here>", "<@everyone>", "<@channel>" ,"<!here>", "<!everyone>", "<!channel>"])
+    
+    # 특정 사용자들의 메시지인지 확인 (장지연, 김은지)
+    target_users = ["장지연", "김은지"]
+    is_target_user = user_name and user_name in target_users
+    
+    # 멘션이나 특정 사용자가 아니면 None 반환
+    if not has_mention and not is_target_user:
         return None
     
     # 기본 정보 추출
@@ -1146,6 +1153,9 @@ def parse_slack_issue_message(text: str) -> Optional[Dict[str, str]]:
     author_match = re.search(r'작성자[:：]\s*([^\n]+)', text)
     if author_match:
         issue_data['author'] = author_match.group(1).strip()
+    elif is_target_user:
+        # 특정 사용자의 메시지인 경우 해당 사용자명 사용
+        issue_data['author'] = user_name
     else:
         issue_data['author'] = "행정 담당자"
     
@@ -1163,6 +1173,9 @@ def parse_slack_issue_message(text: str) -> Optional[Dict[str, str]]:
         issue_type = "출결관리"
     elif any(keyword in text for keyword in ["공지", "안내", "알림"]):
         issue_type = "공지사항"
+    elif is_target_user:
+        # 특정 사용자의 메시지인 경우 "담당자 메시지"로 분류
+        issue_type = "담당자 메시지"
     
     issue_data['issue_type'] = issue_type
     
@@ -1293,9 +1306,20 @@ async def sync_slack_issues(hours: int = 24, force: bool = False) -> Dict[str, A
             
             text = message.get("text", "")
             slack_ts = message.get("ts")
+            user_id = message.get("user", "")
             
-            # 이슈 메시지인지 파싱 시도
-            issue_data = parse_slack_issue_message(text)
+            # 사용자 정보 가져오기 (슬랙 API를 통해 실제 이름 조회)
+            user_name = None
+            if user_id:
+                try:
+                    user_info = slack_client.users_info(user=user_id)
+                    if user_info["ok"]:
+                        user_name = user_info["user"].get("real_name", "")
+                except Exception as e:
+                    logger.warning(f"사용자 정보 조회 실패: {e}")
+            
+            # 이슈 메시지인지 파싱 시도 (사용자 정보 포함)
+            issue_data = parse_slack_issue_message(text, user_name)
             if not issue_data:
                 continue
             
