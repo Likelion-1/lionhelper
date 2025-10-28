@@ -1514,14 +1514,36 @@ def analyze_question_intent(user_input: str) -> dict:
         "규정준수": ["해외여행", "해외출국", "장소이동", "개인소지", "화장실", "자리비움", "녹화본"]
     }
     
+    # 타사 교육기관 키워드들 (제한 대상) - 멋쟁이사자처럼은 제외
+    competitor_keywords = [
+        "스파르타", "코딩클럽", "코딩 클럽", "코드스테이츠", "코드스테이츠",
+        "위코드", "wecode", "바닐라코딩", "바닐라 코딩", "패스트캠퍼스",
+        "패스트 캠퍼스", "프로그래머스", "프로그래머스", "이노베이션",
+        "부트캠프", "코딩학원", "코딩 학원", "it학원", "it 학원",
+        "개발자교육", "개발자 교육", "프로그래밍학원", "프로그래밍 학원"
+    ]
+    
+    # 자사 키워드 (멋쟁이사자처럼 관련)
+    company_keywords = [
+        "멋쟁이사자처럼", "멋사", "kdt", "k-digital", "k digital"
+    ]
+    
     detected_intent = "일반_문의"
     detected_topic = "기타"
     confidence = 0.0
+    
+    # 타사 교육기관 관련 질문인지 확인 (자사 키워드가 포함된 경우 제외)
+    has_competitor_keywords = any(keyword in input_lower for keyword in competitor_keywords)
+    has_company_keywords = any(keyword in input_lower for keyword in company_keywords)
+    is_competitor_question = has_competitor_keywords and not has_company_keywords
     
     # 일반 대화인 경우 특별 처리
     if is_general_conversation:
         detected_topic = "일반대화"
         confidence = 0.0  # 키워드 매칭 점수를 낮춤
+    elif is_competitor_question:
+        detected_topic = "타사정보"
+        confidence = 1.0  # 타사 정보는 높은 신뢰도로 감지
     else:
         # 의도 분석
         for intent, keywords in intent_patterns.items():
@@ -1545,7 +1567,8 @@ def analyze_question_intent(user_input: str) -> dict:
         "confidence": min(confidence, 1.0),
         "input_length": len(user_input),
         "question_words": len([w for w in input_lower.split() if w in ["뭐", "무엇", "어떤", "왜", "어디", "언제", "누구", "어떻게"]]),
-        "is_general_conversation": is_general_conversation
+        "is_general_conversation": is_general_conversation,
+        "is_competitor_question": is_competitor_question
     }
 
 def find_best_match(user_input: str) -> tuple:
@@ -2100,7 +2123,13 @@ async def call_claude_with_knowledge(user_prompt: str, keyword_matches: List[dic
 • 공결신청: 병원, 예비군, 경조사 등 인정 사유
 • 온라인수업: 줌 참여 규정, 카메라 설정 등
 • 노트북 대여: 신청 절차, 관리 방법, 반납 규정
-• 수료 조건: 출석률, 평가 기준 등"""
+• 수료 조건: 출석률, 평가 기준 등
+
+⚠️ 중요한 제한사항:
+- 오직 멋쟁이사자처럼 K-Digital Training 부트캠프와 관련된 정보만 제공
+- 다른 교육기관, 부트캠프, 코딩학원 등의 정보는 절대 제공하지 않음
+- 타사 서비스나 프로그램에 대한 질문이 들어오면 "멋쟁이사자처럼 부트캠프와 관련된 질문만 답변드릴 수 있습니다"라고 안내
+- 멋쟁이사자처럼 외의 다른 기업이나 교육기관에 대한 상세 정보 제공 금지"""
 
         # 대화 컨텍스트가 있는 경우 추가
         context_section = ""
@@ -2139,7 +2168,8 @@ async def call_claude_with_knowledge(user_prompt: str, keyword_matches: List[dic
 6. 친근하면서도 전문적인 톤으로 답변
 7. 이전 대화에서 언급된 내용이 있다면 자연스럽게 연결하여 답변
 8. 사용자가 걱정하거나 불안해하는 상황이라면 안심시켜주는 표현 포함
-9. 구체적인 숫자나 날짜가 언급되었다면 그 맥락을 유지하여 답변"""
+9. 구체적인 숫자나 날짜가 언급되었다면 그 맥락을 유지하여 답변
+10. ⚠️ 타사 정보 제공 금지: 다른 교육기관이나 부트캠프에 대한 질문이면 "멋쟁이사자처럼 부트캠프와 관련된 질문만 답변드릴 수 있습니다"라고 안내"""
         else:
             # 키워드 매칭이 없는 경우 일반 대화
             enhanced_prompt = f"""{system_context}{context_section}
@@ -2157,7 +2187,8 @@ async def call_claude_with_knowledge(user_prompt: str, keyword_matches: List[dic
 6. 필요시 추가 질문을 유도하거나 도움 제안
 7. 이전 대화에서 언급된 내용이 있다면 자연스럽게 연결하여 답변
 8. 사용자가 걱정하거나 불안해하는 상황이라면 안심시켜주는 표현 포함
-9. 구체적인 숫자나 날짜가 언급되었다면 그 맥락을 유지하여 답변"""
+9. 구체적인 숫자나 날짜가 언급되었다면 그 맥락을 유지하여 답변
+10. ⚠️ 타사 정보 제공 금지: 다른 교육기관이나 부트캠프에 대한 질문이면 "멋쟁이사자처럼 부트캠프와 관련된 질문만 답변드릴 수 있습니다"라고 안내"""
         
         # Claude API 호출
         response = claude_client.make_request(enhanced_prompt, max_tokens)
@@ -2338,8 +2369,13 @@ async def chat_with_hybrid(request: ChatRequest):
             user_intent = analyze_question_intent(request.prompt)
             logger.info(f"질문 의도 분석: {user_intent}")
             
+            # 타사 정보 질문인 경우 제한 응답
+            if user_intent.get("is_competitor_question", False):
+                logger.info("타사 정보 질문 감지 - 제한 응답 제공")
+                response = "죄송합니다. 저는 멋쟁이사자처럼 K-Digital Training 부트캠프와 관련된 질문만 답변드릴 수 있습니다. 멋쟁이사자처럼 부트캠프에 대해 궁금한 점이 있으시면 언제든지 물어보세요!"
+            
             # 일반 대화인 경우 기본 응답 제공
-            if user_intent.get("is_general_conversation", False):
+            elif user_intent.get("is_general_conversation", False):
                 logger.info("일반 대화 감지 - 기본 응답 제공")
                 # 입력에 따른 적절한 응답 선택
                 user_input_lower = request.prompt.lower().strip()
@@ -2375,8 +2411,13 @@ async def chat_with_hybrid(request: ChatRequest):
         user_intent = analyze_question_intent(request.prompt)
         logger.info(f"질문 의도 분석: {user_intent}")
         
+        # 타사 정보 질문인 경우 제한 응답
+        if user_intent.get("is_competitor_question", False):
+            logger.info("타사 정보 질문 감지 - 제한 응답 제공")
+            response = "죄송합니다. 저는 멋쟁이사자처럼 K-Digital Training 부트캠프와 관련된 질문만 답변드릴 수 있습니다. 멋쟁이사자처럼 부트캠프에 대해 궁금한 점이 있으시면 언제든지 물어보세요!"
+        
         # 일반 대화인 경우 키워드 검색 우회하고 바로 기본 응답
-        if user_intent.get("is_general_conversation", False):
+        elif user_intent.get("is_general_conversation", False):
             logger.info("일반 대화 감지 - 키워드 검색 우회하고 기본 응답 제공")
             user_input_lower = request.prompt.lower().strip()
             
