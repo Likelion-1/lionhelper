@@ -884,7 +884,7 @@ class ChatRequest(BaseModel):
     Claude-3-Haiku + Knowledge Base 지능형 시스템
     """
     prompt: str = Field(..., description="사용자 질문 또는 메시지", example="안녕? 훈련장려금 언제 받을 수 있어?")
-    max_new_tokens: Optional[int] = Field(1000, description="Claude 응답 최대 토큰 수 (권장: 1000)", example=1000, ge=50, le=2048)
+    max_new_tokens: Optional[int] = Field(600, description="Claude 응답 최대 토큰 수 (권장: 600)", example=600, ge=50, le=2048)
     temperature: Optional[float] = Field(0.7, description="Claude 창의성 조절 (권장: 0.7)", example=0.7, ge=0.0, le=2.0)
     top_p: Optional[float] = Field(0.9, description="확률 임계값 (0.0-1.0)", example=0.9, ge=0.0, le=1.0)
     use_claude: Optional[bool] = Field(True, description="🧠 Claude 지능형 응답 사용 (기본값: true)", example=True)
@@ -2123,51 +2123,30 @@ async def call_claude_with_knowledge(user_prompt: str, keyword_matches: List[dic
             user_context = get_user_context(session_id)
             conversation_memory = get_conversation_memory(session_id)
         
-        # 훈련 전문가로서의 시스템 컨텍스트
-        system_context = """당신은 멋쟁이사자처럼 K-Digital Training 부트캠프의 전문 AI 상담사입니다.
+        # 훈련 전문가로서의 시스템 컨텍스트 (최적화됨)
+        system_context = """멋쟁이사자처럼 K-Digital Training 부트캠프 전문 AI 상담사입니다.
 
-🎯 주요 역할:
-- 훈련생들의 질문에 정확하고 친절하게 답변
-- 규정과 절차를 명확하게 안내
-- 복잡한 내용을 이해하기 쉽게 설명
-- 항상 도움이 되는 추가 정보나 팁 제공
-- 이전 대화 내용을 기억하고 연관성 있게 답변
+역할: 훈련생 질문에 정확하고 친절하게 답변, 규정/절차 명확 안내
 
-📋 주요 분야:
-• 훈련장려금: 일일 15,800원, 80% 출석률 필요, 단위기간별 지급
-• 출결관리: QR코드 체크, 지각/조퇴/외출 관리, HRD앱 사용
-• 공결신청: 병원, 예비군, 경조사 등 인정 사유
-• 온라인수업: 줌 참여 규정, 카메라 설정 등
-• 노트북 대여: 신청 절차, 관리 방법, 반납 규정
-• 수료 조건: 출석률, 평가 기준 등
+전문분야: 훈련장려금(일일 15,800원, 80% 출석), 출결관리(QR체크, HRD앱), 공결신청, 온라인수업(줌), 노트북 대여, 수료조건
 
-⚠️ 중요한 제한사항:
-- 오직 멋쟁이사자처럼 K-Digital Training 부트캠프와 관련된 정보만 제공
-- 다른 교육기관, 부트캠프, 코딩학원 등의 정보는 절대 제공하지 않음
-- 타사 서비스나 프로그램에 대한 질문이 들어오면 "멋쟁이사자처럼 부트캠프와 관련된 질문만 답변드릴 수 있습니다"라고 안내
-- 멋쟁이사자처럼 외의 다른 기업이나 교육기관에 대한 상세 정보 제공 금지"""
+⚠️ 멋쟁이사자처럼 부트캠프 관련 정보만 제공. 타 기관 질문 시 정중히 거절."""
 
         # 대화 컨텍스트가 있는 경우 추가
         context_section = ""
         if conversation_context:
             context_section = f"""
 
-💬 이전 대화 내용:
-{conversation_context}
-
-{conversation_summary}
-{conversation_flow}
-{user_context}
-{conversation_memory}
-
-위 대화 내용을 참고하여 연속성 있는 답변을 해주세요. 이전에 언급된 내용이나 질문과 관련이 있다면 자연스럽게 연결하여 답변해주세요. 사용자의 상황과 감정을 고려하여 공감적이고 도움이 되는 답변을 제공해주세요. 특히 구체적인 숫자나 상황이 언급되었다면 그 맥락을 정확히 기억하고 활용해주세요."""
+💬 이전 대화: {conversation_context}
+{conversation_summary}{conversation_flow}{user_context}{conversation_memory}
+위 내용 참고하여 연속성 있게 답변."""
 
         if keyword_matches and len(keyword_matches) > 0:
-            # 키워드 매칭된 정보들을 참고 자료로 활용
-            reference_info = "\n\n📚 참고 정보:\n"
-            for i, match in enumerate(keyword_matches[:3], 1):  # 상위 3개만
+            # 키워드 매칭된 정보들을 참고 자료로 활용 (최적화: 상위 2개, 100자)
+            reference_info = "\n\n📚 참고:\n"
+            for i, match in enumerate(keyword_matches[:2], 1):  # 상위 2개만
                 reference_info += f"{i}. Q: {match['question']}\n"
-                reference_info += f"   A: {match['answer'][:200]}{'...' if len(match['answer']) > 200 else ''}\n\n"
+                reference_info += f"   A: {match['answer'][:100]}{'...' if len(match['answer']) > 100 else ''}\n\n"
             
             enhanced_prompt = f"""{system_context}{context_section}
 
@@ -2175,17 +2154,7 @@ async def call_claude_with_knowledge(user_prompt: str, keyword_matches: List[dic
 
 질문: {user_prompt}
 
-답변 가이드라인:
-1. 참고 정보의 핵심 내용을 포함하되, 기계적인 복사가 아닌 자연스러운 설명으로
-2. 이전 대화와의 연관성을 고려하여 맥락 있는 답변 제공
-3. 사용자의 상황과 감정을 이해하고 공감적인 톤으로 답변
-4. 추가적인 맥락이나 도움이 될 만한 정보가 있다면 함께 제공
-5. 규정이나 절차가 복잡하다면 단계별로 쉽게 설명
-6. 친근하면서도 전문적인 톤으로 답변
-7. 이전 대화에서 언급된 내용이 있다면 자연스럽게 연결하여 답변
-8. 사용자가 걱정하거나 불안해하는 상황이라면 안심시켜주는 표현 포함
-9. 구체적인 숫자나 날짜가 언급되었다면 그 맥락을 유지하여 답변
-10. ⚠️ 타사 정보 제공 금지: 다른 교육기관이나 부트캠프에 대한 질문이면 "멋쟁이사자처럼 부트캠프와 관련된 질문만 답변드릴 수 있습니다"라고 안내"""
+답변 가이드: 참고 정보 기반 자연스러운 설명, 이전 대화 맥락 유지, 친근하고 전문적인 톤, 단계별 설명. 타사 질문은 정중히 거절."""
         else:
             # 키워드 매칭이 없는 경우 일반 대화
             enhanced_prompt = f"""{system_context}{context_section}
@@ -2194,17 +2163,7 @@ async def call_claude_with_knowledge(user_prompt: str, keyword_matches: List[dic
 
 질문: {user_prompt}
 
-답변 가이드라인:
-1. 친근하고 도움이 되는 톤으로 답변
-2. 이전 대화 내용과의 연관성을 고려하여 맥락 있는 답변
-3. 사용자의 상황과 감정을 이해하고 공감적인 톤으로 답변
-4. 부트캠프와 관련이 있다면 관련 정보나 안내 제공
-5. 일반적인 질문이라면 자연스럽게 대화
-6. 필요시 추가 질문을 유도하거나 도움 제안
-7. 이전 대화에서 언급된 내용이 있다면 자연스럽게 연결하여 답변
-8. 사용자가 걱정하거나 불안해하는 상황이라면 안심시켜주는 표현 포함
-9. 구체적인 숫자나 날짜가 언급되었다면 그 맥락을 유지하여 답변
-10. ⚠️ 타사 정보 제공 금지: 다른 교육기관이나 부트캠프에 대한 질문이면 "멋쟁이사자처럼 부트캠프와 관련된 질문만 답변드릴 수 있습니다"라고 안내"""
+답변 가이드: 친근하고 도움되는 톤, 이전 대화 맥락 유지, 부트캠프 관련 정보 제공. 타사 질문은 정중히 거절."""
         
         # Claude API 호출
         response = claude_client.make_request(enhanced_prompt, max_tokens)
