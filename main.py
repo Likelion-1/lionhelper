@@ -946,6 +946,8 @@ class ChatResponse(BaseModel):
     response_type: str = Field(..., description="응답 유형 (claude_enhanced/smart_keyword/fallback)", example="claude_enhanced")
     related_questions: Optional[List[RelatedQuestion]] = Field(None, description="관련 질문 목록 (키워드 DB)")
     total_related: Optional[int] = Field(None, description="관련 질문 총 개수")
+    response_time_ms: Optional[float] = Field(None, description="응답 생성 시간 (밀리초)", example=1234.5)
+    model_response_time_ms: Optional[float] = Field(None, description="AI 모델 응답 시간 (밀리초)", example=987.3)
 
     class Config:
         schema_extra = {
@@ -2095,13 +2097,19 @@ async def call_claude(user_prompt: str, max_tokens: int = 1000, temperature: flo
         logger.error(f"Claude API 호출 실패: {str(e)}")
         return None
 
-async def call_claude_with_knowledge(user_prompt: str, keyword_matches: List[dict] = None, max_tokens: int = 1000, session_id: str = None) -> Optional[str]:
-    """Claude가 키워드 DB 정보와 대화 컨텍스트를 참고해서 지능적인 답변을 생성"""
+async def call_claude_with_knowledge(user_prompt: str, keyword_matches: List[dict] = None, max_tokens: int = 1000, session_id: str = None) -> tuple[Optional[str], Optional[float]]:
+    """Claude가 키워드 DB 정보와 대화 컨텍스트를 참고해서 지능적인 답변을 생성
+    
+    Returns:
+        tuple[Optional[str], Optional[float]]: (응답 텍스트, 응답 시간(ms))
+    """
     if not claude_client:
         logger.warning("Claude 클라이언트가 초기화되지 않았습니다")
-        return None
+        return None, None
     
     try:
+        # Claude API 호출 시간 측정 시작
+        model_start_time = time.time()
         # 대화 컨텍스트 가져오기
         conversation_context = ""
         conversation_summary = ""
@@ -2201,16 +2209,20 @@ async def call_claude_with_knowledge(user_prompt: str, keyword_matches: List[dic
         # Claude API 호출
         response = claude_client.make_request(enhanced_prompt, max_tokens)
         
+        # Claude API 호출 시간 측정 종료
+        model_end_time = time.time()
+        model_response_time_ms = (model_end_time - model_start_time) * 1000
+        
         if response:
-            logger.info("Claude 지식 기반 응답 생성 성공")
-            return response.strip()
+            logger.info(f"Claude 지식 기반 응답 생성 성공 (응답 시간: {model_response_time_ms:.2f}ms)")
+            return response.strip(), model_response_time_ms
         else:
             logger.warning("Claude 지식 기반 응답이 비어있습니다")
-            return None
+            return None, model_response_time_ms
             
     except Exception as e:
         logger.error(f"Claude 지식 기반 응답 실패: {str(e)}")
-        return None
+        return None, None
 
 
 @app.get(
@@ -2303,6 +2315,10 @@ async def chat_with_hybrid(request: ChatRequest):
     - 🤝 친근하고 전문적인 상담사 톤
     """
     
+    # 전체 응답 시간 측정 시작
+    total_start_time = time.time()
+    model_response_time_ms = None
+    
     try:
         # 입력 검증
         if not request.prompt or not request.prompt.strip():
@@ -2325,7 +2341,7 @@ async def chat_with_hybrid(request: ChatRequest):
             
             # 2단계: Claude가 키워드 정보를 참고해서 지능적 답변 생성
             try:
-                ai_response = await call_claude_with_knowledge(
+                ai_response, model_response_time_ms = await call_claude_with_knowledge(
                     request.prompt,
                     keyword_matches=related_data,
                     max_tokens=request.max_new_tokens,
@@ -2354,7 +2370,10 @@ async def chat_with_hybrid(request: ChatRequest):
                         except Exception as e:
                             logger.warning(f"대화 기록 저장 실패: {str(e)}")
                     
-                    logger.info("✅ Claude 지능형 응답 생성 성공")
+                    # 전체 응답 시간 계산
+                    total_response_time_ms = (time.time() - total_start_time) * 1000
+                    
+                    logger.info(f"✅ Claude 지능형 응답 생성 성공 (전체: {total_response_time_ms:.2f}ms, 모델: {model_response_time_ms:.2f}ms)")
                     return ChatResponse(
                         response=ai_response,
                         model="Claude-3-Haiku + Knowledge Base",
@@ -2362,7 +2381,9 @@ async def chat_with_hybrid(request: ChatRequest):
                         matched_keywords=[kw for item in related_data for kw in item.get("matched_keywords", [])][:5],
                         response_type="claude_enhanced",
                         related_questions=related_questions,
-                        total_related=len(related_data)
+                        total_related=len(related_data),
+                        response_time_ms=total_response_time_ms,
+                        model_response_time_ms=model_response_time_ms
                     )
                     
             except Exception as e:
@@ -2397,6 +2418,7 @@ async def chat_with_hybrid(request: ChatRequest):
                 else:
                     response = "안녕하세요! 무엇을 도와드릴까요? 훈련장려금, 출결, 공결 등 궁금한 점을 물어보세요."
                 
+                total_response_time_ms = (time.time() - total_start_time) * 1000
                 return ChatResponse(
                     response=response,
                     model="Smart Intent-based Response System",
@@ -2404,7 +2426,9 @@ async def chat_with_hybrid(request: ChatRequest):
                     matched_keywords=[],
                     response_type="fallback",
                     related_questions=None,
-                    total_related=0
+                    total_related=0,
+                    response_time_ms=total_response_time_ms,
+                    model_response_time_ms=None
                 )
             
             # 훈련 관련 질문인 경우 컨텍스트 검색 수행
@@ -2438,6 +2462,7 @@ async def chat_with_hybrid(request: ChatRequest):
             else:
                 response = "안녕하세요! 무엇을 도와드릴까요? 훈련장려금, 출결, 공결 등 궁금한 점을 물어보세요."
             
+            total_response_time_ms = (time.time() - total_start_time) * 1000
             return ChatResponse(
                 response=response,
                 model="Smart Intent-based Response System",
@@ -2445,7 +2470,9 @@ async def chat_with_hybrid(request: ChatRequest):
                 matched_keywords=[],
                 response_type="general_greeting",
                 related_questions=None,
-                total_related=0
+                total_related=0,
+                response_time_ms=total_response_time_ms,
+                model_response_time_ms=None
             )
         
         # 컨텍스트 키워드 추출
@@ -2552,6 +2579,9 @@ async def chat_with_hybrid(request: ChatRequest):
             response = "죄송합니다. 응답을 생성할 수 없습니다."
             status = "error"
         
+        # 전체 응답 시간 계산
+        total_response_time_ms = (time.time() - total_start_time) * 1000
+        
         # 응답 객체 생성
         chat_response = ChatResponse(
             response=response,
@@ -2560,7 +2590,9 @@ async def chat_with_hybrid(request: ChatRequest):
             matched_keywords=matched_keywords if matched_keywords else [],
             response_type=response_type,
             related_questions=related_questions[:4] if related_questions else None,  # 최대 4개까지
-            total_related=len(related_questions) if related_questions else 0
+            total_related=len(related_questions) if related_questions else 0,
+            response_time_ms=total_response_time_ms,
+            model_response_time_ms=model_response_time_ms
         )
         
         # 대화 기록 저장 (세션 ID가 있는 경우)
